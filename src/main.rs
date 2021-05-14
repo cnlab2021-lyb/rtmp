@@ -1,12 +1,14 @@
 use std::io::{Read, Result, Write};
 use std::net::{TcpListener, TcpStream};
 
+mod amf;
+
 fn handle_handshake(stream: &mut TcpStream) -> Result<()> {
     let mut c0 = [0x0; 1];
     let s0 = [0x3; 1];
-    stream.read(&mut c0)?;
+    stream.read_exact(&mut c0)?;
     assert_eq!(c0[0], 0x3);
-    stream.write(&s0)?;
+    stream.write_all(&s0)?;
     const HANDSHAKE_SIZE: usize = 1536;
     let (mut c1, mut c2, mut s1, mut s2) = (
         [0x0; HANDSHAKE_SIZE],
@@ -15,18 +17,18 @@ fn handle_handshake(stream: &mut TcpStream) -> Result<()> {
         [0x0; HANDSHAKE_SIZE],
     );
     s1[8..].fill(0x11);
-    stream.read(&mut c1)?;
-    stream.write(&s1)?;
+    stream.read_exact(&mut c1)?;
+    stream.write_all(&s1)?;
     s2[8..].copy_from_slice(&c1[8..]);
-    stream.write(&s2)?;
-    stream.read(&mut c2)?;
+    stream.write_all(&s2)?;
+    stream.read_exact(&mut c2)?;
     assert!(c2[8..] == s1[8..]);
     Ok(())
 }
 
 fn read_bytes(stream: &mut TcpStream, nbytes: usize) -> Result<u64> {
     let mut buffer = vec![0; nbytes];
-    stream.read(&mut buffer)?;
+    stream.read_exact(&mut buffer)?;
     let mut result: u64 = 0;
     for byte in buffer {
         result = result << 8 | (byte as u64);
@@ -51,11 +53,9 @@ struct MessageChunk {
 }
 
 fn aggregate(buffer: &[u8]) -> u64 {
-    let mut result: u64 = 0;
-    for &byte in buffer {
-        result = result << 8 | (byte as u64);
-    }
-    result
+    buffer
+        .iter()
+        .fold(0_u64, |sum, &byte| sum << 8 | (byte as u64))
 }
 
 fn read_basic_header(stream: &mut TcpStream) -> Result<(u8, u16)> {
@@ -104,17 +104,16 @@ fn read_message_header(
 fn read_message_chunk(
     stream: &mut TcpStream,
     prev_chunk: &Option<MessageChunk>,
+    max_chunk_size: usize,
 ) -> Result<MessageChunk> {
     let (chunk_type, chunk_id) = read_basic_header(stream)?;
-    if prev_chunk.is_none() {
-        assert_eq!(chunk_type, 0x0);
-    }
+    assert_eq!(prev_chunk.is_none(), chunk_type == 0x0);
     let message_header = read_message_header(stream, chunk_type, prev_chunk)?;
     eprintln!(
         "chunk_type = {}, chunk_id = {}, message_header = {:?}",
         chunk_type, chunk_id, message_header
     );
-    let chunk_size = std::cmp::min(message_header.message_length, 128);
+    let chunk_size = std::cmp::min(message_header.message_length, max_chunk_size);
     let mut chunk = MessageChunk {
         chunk_id,
         chunk_type,
@@ -129,8 +128,18 @@ fn read_message_chunk(
 fn handle_client(mut stream: TcpStream) -> Result<()> {
     handle_handshake(&mut stream)?;
     let mut prev_chunk = None;
+    let mut max_chunk_size: usize = 128;
     loop {
-        let chunk = read_message_chunk(&mut stream, &prev_chunk)?;
+        let chunk = read_message_chunk(&mut stream, &prev_chunk, max_chunk_size)?;
+        match chunk.header.message_type_id {
+            1 => {
+                // Set chunk size.
+                let mut buffer = [0x0; 4];
+                stream.read_exact(&mut buffer)?;
+                max_chunk_size = aggregate(&buffer) as usize;
+            }
+            _ => {}
+        }
         prev_chunk = match chunk.header.message_length {
             0 => None,
             _ => Some(chunk),
