@@ -2,6 +2,7 @@ use std::net::TcpListener;
 
 mod amf;
 mod server;
+mod stream;
 
 use server::RtmpServer;
 

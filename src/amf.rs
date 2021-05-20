@@ -19,7 +19,7 @@ const RECORDSET_MARKER: u8 = 0xE;
 const XML_DOCUMENT_MARKER: u8 = 0xF;
 const TYPED_OBJECT_MARKER: u8 = 0x10;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AmfObject {
     String(String),
     Number(f64),
@@ -80,7 +80,7 @@ pub fn decode_amf_message_number(reader: &mut AmfByteReader, verify_marker: bool
         assert_eq!(type_marker, NUMBER_MARKER);
     }
     let mut buffer = [0x0; 8];
-    reader.read(&mut buffer)?;
+    reader.read_exact(&mut buffer)?;
     Ok(f64::from_be_bytes(buffer))
 }
 
@@ -95,7 +95,7 @@ pub fn decode_amf_message_object(
     }
     loop {
         let mut buffer = [0x0; 2];
-        reader.read(&mut buffer)?;
+        reader.read_exact(&mut buffer)?;
         let str_size = u16::from_be_bytes(buffer);
         if str_size == 0 {
             let next_type_marker = reader.read_one()?;
@@ -103,7 +103,7 @@ pub fn decode_amf_message_object(
             break;
         } else {
             let mut str_buffer = vec![0x0; str_size as usize];
-            reader.read(&mut str_buffer)?;
+            reader.read_exact(&mut str_buffer)?;
             map.insert(
                 String::from_utf8(str_buffer).unwrap(),
                 decode_amf_message(reader)?,
@@ -113,21 +113,76 @@ pub fn decode_amf_message_object(
     Ok(map)
 }
 
+fn encode_amf_message_impl(src: &AmfObject, message: &mut Vec<u8>) -> Result<()> {
+    match src {
+        AmfObject::String(s) => {
+            message.push(STRING_MARKER);
+            message.extend_from_slice(&(s.len() as u16).to_be_bytes());
+            message.extend_from_slice(s.as_bytes());
+        }
+        AmfObject::Number(x) => {
+            message.push(NUMBER_MARKER);
+            message.extend_from_slice(&x.to_be_bytes());
+        }
+        AmfObject::Boolean(b) => {
+            message.push(BOOLEAN_MARKER);
+            let byte = match b {
+                true => 1,
+                false => 0,
+            };
+            message.push(byte);
+        }
+        AmfObject::Object(obj) => {
+            message.push(OBJECT_MARKER);
+            for (key, val) in obj.iter() {
+                message.extend_from_slice(&(key.len() as u16).to_be_bytes());
+                message.extend_from_slice(key.as_bytes());
+                encode_amf_message_impl(val, message)?;
+            }
+            message.push(0x0);
+            message.push(0x0);
+            message.push(OBJECT_END_MARKER);
+        }
+        AmfObject::Null => {
+            message.push(NULL_MARKER);
+        }
+        AmfObject::Undefined => {
+            message.push(UNDEFINED_MARKER);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub fn encode_amf_message(src: &AmfObject) -> Result<Vec<u8>> {
+    let mut buffer = Vec::new();
+    encode_amf_message_impl(src, &mut buffer)?;
+    Ok(buffer)
+}
+
+pub fn encode_amf_messages(src: &[AmfObject]) -> Result<Vec<u8>> {
+    let mut buffer = Vec::new();
+    for obj in src {
+        encode_amf_message_impl(obj, &mut buffer)?;
+    }
+    Ok(buffer)
+}
+
 pub fn decode_amf_message(reader: &mut AmfByteReader) -> Result<AmfObject> {
     let type_marker = reader.read_one()?;
     match type_marker {
         NUMBER_MARKER => Ok(AmfObject::Number(decode_amf_message_number(reader, false)?)),
         BOOLEAN_MARKER => {
             let mut buffer = [0x0; 1];
-            reader.read(&mut buffer)?;
+            reader.read_exact(&mut buffer)?;
             Ok(AmfObject::Boolean(buffer[0] != 0))
         }
         STRING_MARKER => {
             let mut buffer = [0x0; 2];
-            reader.read(&mut buffer)?;
+            reader.read_exact(&mut buffer)?;
             let size = u16::from_be_bytes(buffer);
             let mut buffer = vec![0x0; size as usize];
-            reader.read(&mut buffer)?;
+            reader.read_exact(&mut buffer)?;
             Ok(AmfObject::String(String::from_utf8(buffer).map_err(
                 |_| Error::new(ErrorKind::InvalidData, "error"),
             )?))
@@ -179,5 +234,21 @@ fn amf_parse_string() {
         assert_eq!(x, "jizz");
     } else {
         panic!();
+    }
+}
+
+#[test]
+fn amf_encode_number() {
+    match encode_amf_message(&AmfObject::Number(7122.123_f64)) {
+        Ok(buffer) => {
+            if let Ok(AmfObject::Number(x)) = decode_amf_message_from_slice(&buffer) {
+                assert_eq!(x, 7122.123_f64);
+            } else {
+                panic!();
+            }
+        }
+        Err(_) => {
+            panic!();
+        }
     }
 }
