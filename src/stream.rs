@@ -61,25 +61,25 @@ impl RtmpStream {
         self.stream.read_exact(&mut buffer)?;
         let mut message_header = match &self.prev_message_header {
             None => ChunkMessageHeader::default(),
-            Some(chunk) => chunk.clone(),
+            Some(header) => header.clone(),
         };
         let mut timestamp = 0;
         if chunk_type < 3 {
-            timestamp = aggregate(&buffer[0..3]) as u32;
+            timestamp = aggregate(&buffer[0..3], false) as u32;
         }
         if chunk_type < 2 {
-            message_header.message_length = aggregate(&buffer[3..6]) as usize;
+            message_header.message_length = aggregate(&buffer[3..6], false) as usize;
             message_header.message_type_id = buffer[6];
         }
         if chunk_type == 0 {
-            message_header.message_stream_id = aggregate(&buffer[7..11]) as u32;
+            message_header.message_stream_id = aggregate(&buffer[7..11], true) as u32;
         }
         // TODO: Handle type 3 header
         if chunk_type < 3 && timestamp >= 0xFFFFFF {
             assert_eq!(timestamp, 0xFFFFFF);
             let mut buffer = [0x0; 4];
             self.stream.read_exact(&mut buffer)?;
-            timestamp = aggregate(&buffer) as u32;
+            timestamp = aggregate(&buffer, false) as u32;
         }
         if chunk_type == 0 {
             message_header.timestamp = timestamp;
@@ -207,7 +207,7 @@ impl RtmpStream {
             buffer.push(header.message_type_id);
         }
         if chunk_type == 0 {
-            buffer.extend_from_slice(&header.message_stream_id.to_be_bytes());
+            buffer.extend_from_slice(&header.message_stream_id.to_le_bytes());
         }
         if chunk_type < 3 && header.timestamp >= 0xFFFFFF {
             buffer.extend_from_slice(&header.timestamp.to_be_bytes());
@@ -257,8 +257,15 @@ fn read_bytes(stream: &mut TcpStream, nbytes: usize) -> Result<u64> {
     Ok(result)
 }
 
-fn aggregate(buffer: &[u8]) -> u64 {
-    buffer
-        .iter()
-        .fold(0_u64, |sum, &byte| sum << 8 | (byte as u64))
+fn aggregate(buffer: &[u8], little_endian: bool) -> u64 {
+    if little_endian {
+        buffer
+            .iter()
+            .rev()
+            .fold(0_u64, |sum, &byte| sum << 8 | (byte as u64))
+    } else {
+        buffer
+            .iter()
+            .fold(0_u64, |sum, &byte| sum << 8 | (byte as u64))
+    }
 }
