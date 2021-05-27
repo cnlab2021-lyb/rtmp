@@ -1,5 +1,6 @@
+use super::read::*;
 use std::collections::HashMap;
-use std::io::{Error, ErrorKind, Read, Result};
+use std::io::{Cursor, Error, ErrorKind, Read, Result};
 
 const NUMBER_MARKER: u8 = 0x0;
 const BOOLEAN_MARKER: u8 = 0x1;
@@ -31,74 +32,16 @@ pub enum AmfObject {
     Reference(u16),
 }
 
-#[derive(Debug)]
-pub struct AmfByteReader<'a> {
-    buffer: &'a [u8],
-    ptr: usize,
-}
-
-impl<'a> From<&'a [u8]> for AmfByteReader<'a> {
-    fn from(bytes: &'a [u8]) -> Self {
-        AmfByteReader {
-            buffer: bytes,
-            ptr: 0,
-        }
-    }
-}
-
-impl<'a> From<&'a Vec<u8>> for AmfByteReader<'a> {
-    fn from(bytes: &'a Vec<u8>) -> Self {
-        AmfByteReader {
-            buffer: bytes,
-            ptr: 0,
-        }
-    }
-}
-
-impl<'a> Read for AmfByteReader<'a> {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let len = buf.len();
-        if self.ptr + len > self.buffer.len() {
-            return Err(Error::new(ErrorKind::UnexpectedEof, "Out-of-bound read"));
-        }
-        buf.copy_from_slice(&self.buffer[self.ptr..self.ptr + len]);
-        self.ptr += len;
-        Ok(len)
-    }
-}
-
-impl<'a> AmfByteReader<'a> {
-    fn read_one(&mut self) -> Result<u8> {
-        if self.ptr == self.buffer.len() {
-            return Err(Error::new(
-                ErrorKind::UnexpectedEof,
-                "Invalid read when the buffer is empty",
-            ));
-        }
-        let result = self.buffer[self.ptr];
-        self.ptr += 1;
-        Ok(result)
-    }
-
-    pub fn finish(&self) -> bool {
-        self.ptr == self.buffer.len()
-    }
-}
-
-pub fn decode_amf_number(reader: &mut AmfByteReader, verify_marker: bool) -> Result<f64> {
+pub fn decode_amf_number(reader: &mut Cursor<Vec<u8>>, verify_marker: bool) -> Result<f64> {
     if verify_marker {
-        let type_marker = reader.read_one()?;
+        let type_marker = read_u8(reader)?;
         assert_eq!(type_marker, NUMBER_MARKER);
     }
-    let mut buffer = [0x0; 8];
-    reader.read_exact(&mut buffer)?;
-    Ok(f64::from_be_bytes(buffer))
+    read_f64(reader)
 }
 
-fn decode_amf_object_property(reader: &mut AmfByteReader) -> Result<Option<(String, AmfObject)>> {
-    let mut buffer = [0x0; 2];
-    reader.read_exact(&mut buffer)?;
-    let str_size = u16::from_be_bytes(buffer);
+fn decode_amf_object_property(reader: &mut Cursor<Vec<u8>>) -> Result<Option<(String, AmfObject)>> {
+    let str_size = read_u16(reader)?;
     if str_size == 0 {
         return Ok(None);
     }
@@ -111,11 +54,11 @@ fn decode_amf_object_property(reader: &mut AmfByteReader) -> Result<Option<(Stri
 }
 
 pub fn decode_amf_object(
-    reader: &mut AmfByteReader,
+    reader: &mut Cursor<Vec<u8>>,
     verify_marker: bool,
 ) -> Result<HashMap<String, AmfObject>> {
     if verify_marker {
-        let type_marker = reader.read_one()?;
+        let type_marker = read_u8(reader)?;
         assert_eq!(type_marker, OBJECT_MARKER);
     }
     let mut map: HashMap<String, AmfObject> = HashMap::new();
@@ -125,7 +68,7 @@ pub fn decode_amf_object(
                 map.insert(key, value);
             }
             None => {
-                assert_eq!(reader.read_one()?, OBJECT_END_MARKER);
+                assert_eq!(read_u8(reader)?, OBJECT_END_MARKER);
                 break;
             }
         }
@@ -133,61 +76,54 @@ pub fn decode_amf_object(
     Ok(map)
 }
 
-pub fn decode_amf_null(reader: &mut AmfByteReader, verify_marker: bool) -> Result<()> {
+pub fn decode_amf_null(reader: &mut Cursor<Vec<u8>>, verify_marker: bool) -> Result<()> {
     if verify_marker {
-        let type_marker = reader.read_one()?;
+        let type_marker = read_u8(reader)?;
         assert_eq!(type_marker, NULL_MARKER);
     }
     Ok(())
 }
 
-pub fn decode_amf_string(reader: &mut AmfByteReader, verify_marker: bool) -> Result<String> {
+pub fn decode_amf_string(reader: &mut Cursor<Vec<u8>>, verify_marker: bool) -> Result<String> {
     if verify_marker {
-        let type_marker = reader.read_one()?;
+        let type_marker = read_u8(reader)?;
         assert_eq!(type_marker, STRING_MARKER);
     }
-    let mut buffer = [0x0; 2];
-    reader.read_exact(&mut buffer)?;
-    let size = u16::from_be_bytes(buffer);
+    let size = read_u16(reader)?;
     let mut buffer = vec![0x0; size as usize];
     reader.read_exact(&mut buffer)?;
     Ok(String::from_utf8(buffer).expect("UTF-8 string"))
 }
 
-pub fn decode_amf_boolean(reader: &mut AmfByteReader, verify_marker: bool) -> Result<bool> {
+pub fn decode_amf_boolean(reader: &mut Cursor<Vec<u8>>, verify_marker: bool) -> Result<bool> {
     if verify_marker {
-        let type_marker = reader.read_one()?;
+        let type_marker = read_u8(reader)?;
         assert_eq!(type_marker, BOOLEAN_MARKER);
     }
-    let mut buffer = [0x0; 1];
-    reader.read_exact(&mut buffer)?;
-    Ok(buffer[0] != 0)
+    Ok(read_u8(reader)? != 0)
 }
 
 pub fn decode_amf_ecma_array(
-    reader: &mut AmfByteReader,
+    reader: &mut Cursor<Vec<u8>>,
     verify_marker: bool,
 ) -> Result<Vec<(String, AmfObject)>> {
     if verify_marker {
-        let type_marker = reader.read_one()?;
+        let type_marker = read_u8(reader)?;
         assert_eq!(type_marker, ECMA_ARRAY_MARKER);
     }
-    let mut buffer = [0x0; 4];
-    reader.read_exact(&mut buffer)?;
     let mut result = Vec::new();
-    let size = u32::from_be_bytes(buffer);
-    for _ in 0..size {
+    for _ in 0..read_u32(reader)? {
         if let Some((key, value)) = decode_amf_object_property(reader)? {
             result.push((key, value));
         }
     }
     assert_matches!(decode_amf_object_property(reader)?, None);
-    assert_eq!(reader.read_one()?, OBJECT_END_MARKER);
+    assert_eq!(read_u8(reader)?, OBJECT_END_MARKER);
     Ok(result)
 }
 
-pub fn decode_amf_message(reader: &mut AmfByteReader) -> Result<AmfObject> {
-    let type_marker = reader.read_one()?;
+pub fn decode_amf_message(reader: &mut Cursor<Vec<u8>>) -> Result<AmfObject> {
+    let type_marker = read_u8(reader)?;
     match type_marker {
         NUMBER_MARKER => Ok(AmfObject::Number(decode_amf_number(reader, false)?)),
         BOOLEAN_MARKER => Ok(AmfObject::Boolean(decode_amf_boolean(reader, false)?)),
@@ -255,7 +191,7 @@ mod tests {
     use super::*;
 
     fn decode_amf_message_from_slice(buffer: &[u8]) -> Result<AmfObject> {
-        let mut reader = AmfByteReader::from(buffer);
+        let mut reader = Cursor::new(Vec::from(buffer));
         decode_amf_message(&mut reader)
     }
 

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{Error, ErrorKind, Result};
+use std::io::{Cursor, Error, ErrorKind, Result};
 use std::net::TcpStream;
 
 use super::amf::*;
@@ -29,7 +29,7 @@ const PROTOCOL_CONTROL_CHUNK_STREAM_ID: u16 = 0x2;
 
 impl RtmpServer {
     #[allow(clippy::float_cmp)]
-    fn handle_connect(&mut self, mut reader: AmfByteReader) -> Result<()> {
+    fn handle_connect(&mut self, mut reader: Cursor<Vec<u8>>) -> Result<()> {
         let transaction_id = decode_amf_number(&mut reader, true)?;
         assert_eq!(transaction_id, 1_f64);
         let cmd_object = decode_amf_object(&mut reader, true)?;
@@ -65,29 +65,26 @@ impl RtmpServer {
             RTMP_COMMAND_MESSAGE_AMF0,
             &buffer,
         )?;
-        assert!(reader.finish());
         Ok(())
     }
 
-    fn handle_release_stream(&self, mut reader: AmfByteReader) -> Result<()> {
+    fn handle_release_stream(&self, mut reader: Cursor<Vec<u8>>) -> Result<()> {
         let _ = decode_amf_number(&mut reader, true)?;
         let _ = decode_amf_null(&mut reader, true)?;
         let _ = decode_amf_string(&mut reader, true)?;
-        assert!(reader.finish());
         Ok(())
     }
 
-    fn handle_fc_publish(&self, mut reader: AmfByteReader) -> Result<()> {
+    fn handle_fc_publish(&self, mut reader: Cursor<Vec<u8>>) -> Result<()> {
         let _ = decode_amf_number(&mut reader, true)?;
         let _ = decode_amf_null(&mut reader, true)?;
         let _ = decode_amf_string(&mut reader, true)?;
-        assert!(reader.finish());
         Ok(())
     }
 
     fn handle_create_stream(
         &mut self,
-        mut reader: AmfByteReader,
+        mut reader: Cursor<Vec<u8>>,
         header: ChunkMessageHeader,
     ) -> Result<()> {
         let transaction_id = decode_amf_number(&mut reader, true)?;
@@ -105,7 +102,6 @@ impl RtmpServer {
                         AmfObject::Number(header.message_stream_id as f64),
                     ]),
                 )?;
-                assert!(reader.finish());
                 Ok(())
             }
             _ => Err(Error::new(ErrorKind::InvalidData, "Expect Object or Null")),
@@ -128,7 +124,7 @@ impl RtmpServer {
         ])
     }
 
-    fn handle_play(&mut self, mut reader: AmfByteReader) -> Result<()> {
+    fn handle_play(&mut self, mut reader: Cursor<Vec<u8>>) -> Result<()> {
         let _transaction_id = decode_amf_number(&mut reader, true)?;
         // assert_eq!(transaction_id, 0_f64);
         let _cmd_object = decode_amf_null(&mut reader, true)?;
@@ -143,7 +139,7 @@ impl RtmpServer {
         todo!()
     }
 
-    fn handle_publish(&mut self, mut reader: AmfByteReader) -> Result<()> {
+    fn handle_publish(&mut self, mut reader: Cursor<Vec<u8>>) -> Result<()> {
         let _transaction_id = decode_amf_number(&mut reader, true)?;
         // assert_eq!(transaction_id, 0_f64);
         let _cmd_object = decode_amf_null(&mut reader, true)?;
@@ -159,12 +155,11 @@ impl RtmpServer {
             RTMP_COMMAND_MESSAGE_AMF0,
             &Self::on_status("NetStream.Publish.Start"),
         )?;
-        assert!(reader.finish());
         Ok(())
     }
 
     fn handle_command_message(&mut self, message: Message) -> Result<()> {
-        let mut reader = AmfByteReader::from(&message.message);
+        let mut reader = Cursor::new(message.message);
         if let AmfObject::String(cmd) = decode_amf_message(&mut reader)? {
             eprintln!("cmd = {}", cmd);
             match cmd.as_str() {
@@ -187,11 +182,9 @@ impl RtmpServer {
 
     fn handle_data_message(&mut self, message: Message) -> Result<()> {
         eprintln!("Handle data message");
-        let mut reader = AmfByteReader::from(&message.message);
-        while !reader.finish() {
-            let msg = decode_amf_message(&mut reader)?;
-            eprintln!("msg = {:?}", msg);
-        }
+        let mut reader = Cursor::new(message.message);
+        let msg = decode_amf_message(&mut reader)?;
+        eprintln!("msg = {:?}", msg);
         Ok(())
     }
 
