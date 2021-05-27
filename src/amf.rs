@@ -66,15 +66,19 @@ impl<'a> Read for AmfByteReader<'a> {
 impl<'a> AmfByteReader<'a> {
     fn read_one(&mut self) -> Result<u8> {
         if self.ptr == self.buffer.len() {
-            return Err(Error::new(ErrorKind::InvalidData, "error"));
+            return Err(Error::new(ErrorKind::UnexpectedEof, "Invalid read when the buffer is empty"));
         }
         let result = self.buffer[self.ptr];
         self.ptr += 1;
         Ok(result)
     }
+
+    pub fn finish(&self) -> bool {
+        self.ptr == self.buffer.len()
+    }
 }
 
-pub fn decode_amf_message_number(reader: &mut AmfByteReader, verify_marker: bool) -> Result<f64> {
+pub fn decode_amf_number(reader: &mut AmfByteReader, verify_marker: bool) -> Result<f64> {
     if verify_marker {
         let type_marker = reader.read_one()?;
         assert_eq!(type_marker, NUMBER_MARKER);
@@ -84,7 +88,7 @@ pub fn decode_amf_message_number(reader: &mut AmfByteReader, verify_marker: bool
     Ok(f64::from_be_bytes(buffer))
 }
 
-pub fn decode_amf_message_object(
+pub fn decode_amf_object(
     reader: &mut AmfByteReader,
     verify_marker: bool,
 ) -> Result<HashMap<String, AmfObject>> {
@@ -105,7 +109,7 @@ pub fn decode_amf_message_object(
             let mut str_buffer = vec![0x0; str_size as usize];
             reader.read_exact(&mut str_buffer)?;
             map.insert(
-                String::from_utf8(str_buffer).unwrap(),
+                String::from_utf8(str_buffer).expect("UTF-8 string"),
                 decode_amf_message(reader)?,
             );
         }
@@ -113,7 +117,7 @@ pub fn decode_amf_message_object(
     Ok(map)
 }
 
-pub fn decode_amf_message_null(reader: &mut AmfByteReader, verify_marker: bool) -> Result<()> {
+pub fn decode_amf_null(reader: &mut AmfByteReader, verify_marker: bool) -> Result<()> {
     if verify_marker {
         let type_marker = reader.read_one()?;
         assert_eq!(type_marker, NULL_MARKER);
@@ -121,10 +125,7 @@ pub fn decode_amf_message_null(reader: &mut AmfByteReader, verify_marker: bool) 
     Ok(())
 }
 
-pub fn decode_amf_message_string(
-    reader: &mut AmfByteReader,
-    verify_marker: bool,
-) -> Result<String> {
+pub fn decode_amf_string(reader: &mut AmfByteReader, verify_marker: bool) -> Result<String> {
     if verify_marker {
         let type_marker = reader.read_one()?;
         assert_eq!(type_marker, STRING_MARKER);
@@ -137,19 +138,25 @@ pub fn decode_amf_message_string(
     Ok(String::from_utf8(buffer).expect("UTF-8 string"))
 }
 
+pub fn decode_amf_boolean(reader: &mut AmfByteReader, verify_marker: bool) -> Result<bool> {
+    if verify_marker {
+        let type_marker = reader.read_one()?;
+        assert_eq!(type_marker, BOOLEAN_MARKER);
+    }
+    let mut buffer = [0x0; 1];
+    reader.read_exact(&mut buffer)?;
+    Ok(buffer[0] != 0)
+}
+
 pub fn decode_amf_message(reader: &mut AmfByteReader) -> Result<AmfObject> {
     let type_marker = reader.read_one()?;
     match type_marker {
-        NUMBER_MARKER => Ok(AmfObject::Number(decode_amf_message_number(reader, false)?)),
-        BOOLEAN_MARKER => {
-            let mut buffer = [0x0; 1];
-            reader.read_exact(&mut buffer)?;
-            Ok(AmfObject::Boolean(buffer[0] != 0))
-        }
-        STRING_MARKER => Ok(AmfObject::String(decode_amf_message_string(reader, false)?)),
-        OBJECT_MARKER => Ok(AmfObject::Object(decode_amf_message_object(reader, false)?)),
+        NUMBER_MARKER => Ok(AmfObject::Number(decode_amf_number(reader, false)?)),
+        BOOLEAN_MARKER => Ok(AmfObject::Boolean(decode_amf_boolean(reader, false)?)),
+        STRING_MARKER => Ok(AmfObject::String(decode_amf_string(reader, false)?)),
+        OBJECT_MARKER => Ok(AmfObject::Object(decode_amf_object(reader, false)?)),
         NULL_MARKER => Ok(AmfObject::Null),
-        _ => Err(Error::new(ErrorKind::InvalidData, "error")),
+        _ => Err(Error::new(ErrorKind::InvalidData, "Invalid type marker")),
     }
 }
 
@@ -197,12 +204,6 @@ fn encode_amf_message_impl(src: &AmfObject, message: &mut Vec<u8>) -> Result<()>
         _ => {}
     }
     Ok(())
-}
-
-pub fn encode_amf_message(src: &AmfObject) -> Result<Vec<u8>> {
-    let mut buffer = Vec::new();
-    encode_amf_message_impl(src, &mut buffer)?;
-    Ok(buffer)
 }
 
 pub fn encode_amf_messages(src: &[AmfObject]) -> Result<Vec<u8>> {
@@ -255,10 +256,39 @@ fn amf_parse_string() {
 
 #[test]
 fn amf_encode_number() {
-    match encode_amf_message(&AmfObject::Number(7122.123_f64)) {
+    match encode_amf_messages(&[AmfObject::Number(7122.123_f64)]) {
         Ok(buffer) => {
             if let Ok(AmfObject::Number(x)) = decode_amf_message_from_slice(&buffer) {
                 assert_eq!(x, 7122.123_f64);
+            } else {
+                panic!();
+            }
+        }
+        Err(_) => {
+            panic!();
+        }
+    }
+}
+
+#[test]
+fn amf_encode_object() {
+    let object: HashMap<String, AmfObject> = [
+        (
+            "field1".to_string(),
+            AmfObject::String("value1".to_string()),
+        ),
+        ("field2".to_string(), AmfObject::Number(255.0_f64)),
+        ("field3".to_string(), AmfObject::Boolean(true)),
+        ("field4".to_string(), AmfObject::Null),
+    ]
+    .iter()
+    .cloned()
+    .collect();
+    match encode_amf_messages(&[AmfObject::Object(object.clone())]) {
+        Ok(buffer) => {
+            if let Ok(AmfObject::Object(x)) = decode_amf_message_from_slice(&buffer) {
+                assert_eq!(x.len(), object.len());
+                assert!(x.keys().all(|k| object.contains_key(k)));
             } else {
                 panic!();
             }

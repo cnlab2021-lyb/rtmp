@@ -19,8 +19,8 @@ const RTMP_COMMAND_MESSAGE_AMF0: u8 = 20;
 const RTMP_COMMAND_MESSAGE_AMF3: u8 = 17;
 const RTMP_DATA_MESSAGE_AMF0: u8 = 18;
 const RTMP_DATA_MESSAGE_AMF3: u8 = 15;
-const RTMP_VIDEO_MESSAGE: u8 = 8;
-const RTMP_AUDIO_MESSAGE: u8 = 9;
+const RTMP_AUDIO_MESSAGE: u8 = 8;
+const RTMP_VIDEO_MESSAGE: u8 = 9;
 
 const RTMP_NET_CONNECTION_STREAM_ID: u32 = 0;
 
@@ -30,9 +30,9 @@ const PROTOCOL_CONTROL_CHUNK_STREAM_ID: u16 = 0x2;
 impl RtmpServer {
     #[allow(clippy::float_cmp)]
     fn handle_connect(&mut self, mut reader: AmfByteReader) -> Result<()> {
-        let transaction_id = decode_amf_message_number(&mut reader, true)?;
+        let transaction_id = decode_amf_number(&mut reader, true)?;
         assert_eq!(transaction_id, 1_f64);
-        let cmd_object = decode_amf_message_object(&mut reader, true)?;
+        let cmd_object = decode_amf_object(&mut reader, true)?;
         eprintln!("cmd_object = {:?}", cmd_object);
         // TODO: Set window size, peer bandwidth, StreamBegin.
 
@@ -65,16 +65,23 @@ impl RtmpServer {
             RTMP_COMMAND_MESSAGE_AMF0,
             &buffer,
         )?;
+        assert!(reader.finish());
         Ok(())
     }
 
-    // XXX: Seems to be undocumented.
-    fn handle_release_stream(&mut self) -> Result<()> {
+    fn handle_release_stream(&self, mut reader: AmfByteReader) -> Result<()> {
+        let _ = decode_amf_number(&mut reader, true)?;
+        let _ = decode_amf_null(&mut reader, true)?;
+        let _ = decode_amf_string(&mut reader, true)?;
+        assert!(reader.finish());
         Ok(())
     }
 
-    // XXX: Seems to be undocumented.
-    fn handle_fc_publish(&mut self) -> Result<()> {
+    fn handle_fc_publish(&self, mut reader: AmfByteReader) -> Result<()> {
+        let _ = decode_amf_number(&mut reader, true)?;
+        let _ = decode_amf_null(&mut reader, true)?;
+        let _ = decode_amf_string(&mut reader, true)?;
+        assert!(reader.finish());
         Ok(())
     }
 
@@ -83,7 +90,7 @@ impl RtmpServer {
         mut reader: AmfByteReader,
         header: ChunkMessageHeader,
     ) -> Result<()> {
-        let transaction_id = decode_amf_message_number(&mut reader, true)?;
+        let transaction_id = decode_amf_number(&mut reader, true)?;
         let cmd_object = decode_amf_message(&mut reader)?;
         match cmd_object {
             AmfObject::Object(_) | AmfObject::Null => {
@@ -98,6 +105,7 @@ impl RtmpServer {
                         AmfObject::Number(header.message_stream_id as f64),
                     ])?,
                 )?;
+                assert!(reader.finish());
                 Ok(())
             }
             _ => Err(Error::new(ErrorKind::InvalidData, "Expect Object or Null")),
@@ -105,20 +113,26 @@ impl RtmpServer {
     }
 
     fn handle_play(&mut self, mut reader: AmfByteReader) -> Result<()> {
-        let _transaction_id = decode_amf_message_number(&mut reader, true)?;
+        let _transaction_id = decode_amf_number(&mut reader, true)?;
         // assert_eq!(transaction_id, 0_f64);
-        let _cmd_object = decode_amf_message_null(&mut reader, true)?;
-        let stream_name = decode_amf_message_string(&mut reader, true)?;
-        eprintln!("stream_name = {}", stream_name);
-        Ok(())
+        let _cmd_object = decode_amf_null(&mut reader, true)?;
+        let stream_name = decode_amf_string(&mut reader, true)?;
+        let start = decode_amf_message(&mut reader);
+        let duration = decode_amf_message(&mut reader);
+        let reset = decode_amf_message(&mut reader);
+        eprintln!(
+            "stream_name = {}, start = {:?}, duration = {:?}, reset = {:?}",
+            stream_name, start, duration, reset
+        );
+        todo!()
     }
 
     fn handle_publish(&mut self, mut reader: AmfByteReader) -> Result<()> {
-        let _transaction_id = decode_amf_message_number(&mut reader, true)?;
+        let _transaction_id = decode_amf_number(&mut reader, true)?;
         // assert_eq!(transaction_id, 0_f64);
-        let _cmd_object = decode_amf_message_null(&mut reader, true)?;
-        let publishing_name = decode_amf_message_string(&mut reader, true)?;
-        let publishing_type = decode_amf_message_string(&mut reader, true)?;
+        let _cmd_object = decode_amf_null(&mut reader, true)?;
+        let publishing_name = decode_amf_string(&mut reader, true)?;
+        let publishing_type = decode_amf_string(&mut reader, true)?;
         eprintln!(
             "publishing_name = {}, publishing_type = {}",
             publishing_name, publishing_type
@@ -145,6 +159,7 @@ impl RtmpServer {
             RTMP_COMMAND_MESSAGE_AMF0,
             &response,
         )?;
+        assert!(reader.finish());
         Ok(())
     }
 
@@ -154,8 +169,8 @@ impl RtmpServer {
             eprintln!("cmd = {}", cmd);
             match cmd.as_str() {
                 "connect" => self.handle_connect(reader)?,
-                "releaseStream" => self.handle_release_stream()?,
-                "FCPublish" => self.handle_fc_publish()?,
+                "releaseStream" => self.handle_release_stream(reader)?,
+                "FCPublish" => self.handle_fc_publish(reader)?,
                 "createStream" => self.handle_create_stream(reader, message.header)?,
                 "play" => self.handle_play(reader)?,
                 "publish" => self.handle_publish(reader)?,
@@ -170,6 +185,12 @@ impl RtmpServer {
         }
     }
 
+    fn handle_set_chunk_size(&mut self, message: Message) {
+        let mut buffer = [0x0; 4];
+        buffer.copy_from_slice(&message.message);
+        self.stream.max_chunk_size = u32::from_be_bytes(buffer) as usize;
+    }
+
     fn handle_message(&mut self, message: Message) -> Result<()> {
         match message.header.message_type_id {
             RTMP_COMMAND_MESSAGE_AMF0 => {
@@ -182,6 +203,11 @@ impl RtmpServer {
                     "AMF-3 is not supported.",
                 ));
             }
+            RTMP_SET_CHUNK_SIZE => {
+                self.handle_set_chunk_size(message);
+            }
+            RTMP_AUDIO_MESSAGE => {}
+            RTMP_VIDEO_MESSAGE => {}
             _ => {}
         }
         Ok(())
@@ -199,7 +225,6 @@ impl RtmpServer {
                 }
             }
         }
-        Ok(())
     }
 
     pub fn new(stream: TcpStream) -> RtmpServer {
