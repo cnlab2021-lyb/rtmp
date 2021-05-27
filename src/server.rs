@@ -57,7 +57,7 @@ impl RtmpServer {
             AmfObject::Number(1_f64),
             AmfObject::Object(properties),
             AmfObject::Object(information),
-        ])?;
+        ]);
         eprintln!("send_message = {:?}", buffer);
         self.stream.send_message(
             3,
@@ -103,13 +103,29 @@ impl RtmpServer {
                         AmfObject::Number(transaction_id),
                         AmfObject::Null,
                         AmfObject::Number(header.message_stream_id as f64),
-                    ])?,
+                    ]),
                 )?;
                 assert!(reader.finish());
                 Ok(())
             }
             _ => Err(Error::new(ErrorKind::InvalidData, "Expect Object or Null")),
         }
+    }
+
+    fn on_status(code: &str) -> Vec<u8> {
+        let information: HashMap<String, AmfObject> = [
+            ("level".to_string(), AmfObject::String("status".to_string())),
+            ("code".to_string(), AmfObject::String(code.to_string())),
+        ]
+        .iter()
+        .cloned()
+        .collect();
+        encode_amf_messages(&[
+            AmfObject::String("onStatus".to_string()),
+            AmfObject::Number(0_f64),
+            AmfObject::Null,
+            AmfObject::Object(information),
+        ])
     }
 
     fn handle_play(&mut self, mut reader: AmfByteReader) -> Result<()> {
@@ -137,27 +153,11 @@ impl RtmpServer {
             "publishing_name = {}, publishing_type = {}",
             publishing_name, publishing_type
         );
-        let information: HashMap<String, AmfObject> = [
-            ("level".to_string(), AmfObject::String("status".to_string())),
-            (
-                "code".to_string(),
-                AmfObject::String("NetStream.Publish.Start".to_string()),
-            ),
-        ]
-        .iter()
-        .cloned()
-        .collect();
-        let response = encode_amf_messages(&[
-            AmfObject::String("onStatus".to_string()),
-            AmfObject::Number(0_f64),
-            AmfObject::Null,
-            AmfObject::Object(information),
-        ])?;
         self.stream.send_message(
             3,
             RTMP_NET_CONNECTION_STREAM_ID,
             RTMP_COMMAND_MESSAGE_AMF0,
-            &response,
+            &Self::on_status("NetStream.Publish.Start"),
         )?;
         assert!(reader.finish());
         Ok(())

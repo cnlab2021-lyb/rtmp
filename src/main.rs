@@ -1,3 +1,4 @@
+#![feature(assert_matches)]
 use std::net::TcpListener;
 
 mod amf;

@@ -28,7 +28,6 @@ pub enum AmfObject {
     EcmaArray(Vec<(String, AmfObject)>),
     Null,
     Undefined,
-    ObjectEnd,
     Reference(u16),
 }
 
@@ -59,7 +58,7 @@ impl<'a> From<&'a Vec<u8>> for AmfByteReader<'a> {
 impl<'a> Read for AmfByteReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         let len = buf.len();
-        if self.ptr + len >= self.buffer.len() {
+        if self.ptr + len > self.buffer.len() {
             return Err(Error::new(ErrorKind::UnexpectedEof, "Out-of-bound read"));
         }
         buf.copy_from_slice(&self.buffer[self.ptr..self.ptr + len]);
@@ -178,15 +177,12 @@ pub fn decode_amf_ecma_array(
     let mut result = Vec::new();
     let size = u32::from_be_bytes(buffer);
     for _ in 0..size {
-        match decode_amf_object_property(reader)? {
-            Some((key, value)) => {
-                result.push((key, value));
-            }
-            None => {
-                assert_eq!(reader.read_one()?, OBJECT_END_MARKER);
-            }
+        if let Some((key, value)) = decode_amf_object_property(reader)? {
+            result.push((key, value));
         }
     }
+    assert_matches!(decode_amf_object_property(reader)?, None);
+    assert_eq!(reader.read_one()?, OBJECT_END_MARKER);
     Ok(result)
 }
 
@@ -199,7 +195,6 @@ pub fn decode_amf_message(reader: &mut AmfByteReader) -> Result<AmfObject> {
         OBJECT_MARKER => Ok(AmfObject::Object(decode_amf_object(reader, false)?)),
         NULL_MARKER => Ok(AmfObject::Null),
         ECMA_ARRAY_MARKER => Ok(AmfObject::EcmaArray(decode_amf_ecma_array(reader, false)?)),
-        OBJECT_END_MARKER => Ok(AmfObject::ObjectEnd),
         _ => Err(Error::new(
             ErrorKind::InvalidData,
             format!("Invalid type marker {}", type_marker),
@@ -207,12 +202,7 @@ pub fn decode_amf_message(reader: &mut AmfByteReader) -> Result<AmfObject> {
     }
 }
 
-pub fn decode_amf_message_from_slice(buffer: &[u8]) -> Result<AmfObject> {
-    let mut reader = AmfByteReader::from(buffer);
-    decode_amf_message(&mut reader)
-}
-
-fn encode_amf_message_impl(src: &AmfObject, message: &mut Vec<u8>) -> Result<()> {
+fn encode_amf_message_impl(src: &AmfObject, message: &mut Vec<u8>) {
     match src {
         AmfObject::String(s) => {
             message.push(STRING_MARKER);
@@ -236,7 +226,7 @@ fn encode_amf_message_impl(src: &AmfObject, message: &mut Vec<u8>) -> Result<()>
             for (key, val) in obj.iter() {
                 message.extend_from_slice(&(key.len() as u16).to_be_bytes());
                 message.extend_from_slice(key.as_bytes());
-                encode_amf_message_impl(val, message)?;
+                encode_amf_message_impl(val, message);
             }
             message.push(0x0);
             message.push(0x0);
@@ -250,97 +240,94 @@ fn encode_amf_message_impl(src: &AmfObject, message: &mut Vec<u8>) -> Result<()>
         }
         _ => {}
     }
-    Ok(())
 }
 
-pub fn encode_amf_messages(src: &[AmfObject]) -> Result<Vec<u8>> {
+pub fn encode_amf_messages(src: &[AmfObject]) -> Vec<u8> {
     let mut buffer = Vec::new();
     for obj in src {
-        encode_amf_message_impl(obj, &mut buffer)?;
+        encode_amf_message_impl(obj, &mut buffer);
     }
-    Ok(buffer)
+    buffer
 }
 
-#[test]
-fn amf_parse_number() {
-    let message = [0x0; 9];
-    if let Ok(AmfObject::Number(x)) = decode_amf_message_from_slice(&message) {
-        assert_eq!(x, 0_f64);
-    } else {
-        panic!();
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[test]
-fn amf_parse_bool_false() {
-    let message = [0x1, 0x0];
-    if let Ok(AmfObject::Boolean(x)) = decode_amf_message_from_slice(&message) {
-        assert_eq!(x, false);
-    } else {
-        panic!();
+    fn decode_amf_message_from_slice(buffer: &[u8]) -> Result<AmfObject> {
+        let mut reader = AmfByteReader::from(buffer);
+        decode_amf_message(&mut reader)
     }
-}
 
-#[test]
-fn amf_parse_bool_true() {
-    let message = [0x1, 0xA];
-    if let Ok(AmfObject::Boolean(x)) = decode_amf_message_from_slice(&message) {
-        assert_eq!(x, true);
-    } else {
-        panic!();
-    }
-}
-
-#[test]
-fn amf_parse_string() {
-    let message = [0x2, 0x00, 0x4, 0x6A, 0x69, 0x7A, 0x7A];
-    if let Ok(AmfObject::String(x)) = decode_amf_message_from_slice(&message) {
-        assert_eq!(x, "jizz");
-    } else {
-        panic!();
-    }
-}
-
-#[test]
-fn amf_encode_number() {
-    match encode_amf_messages(&[AmfObject::Number(7122.123_f64)]) {
-        Ok(buffer) => {
-            if let Ok(AmfObject::Number(x)) = decode_amf_message_from_slice(&buffer) {
-                assert_eq!(x, 7122.123_f64);
-            } else {
-                panic!();
-            }
-        }
-        Err(_) => {
+    #[test]
+    fn amf_parse_number() {
+        let message = [0x0; 9];
+        if let Ok(AmfObject::Number(x)) = decode_amf_message_from_slice(&message) {
+            assert_eq!(x, 0_f64);
+        } else {
             panic!();
         }
     }
-}
 
-#[test]
-fn amf_encode_object() {
-    let object: HashMap<String, AmfObject> = [
-        (
-            "field1".to_string(),
-            AmfObject::String("value1".to_string()),
-        ),
-        ("field2".to_string(), AmfObject::Number(255.0_f64)),
-        ("field3".to_string(), AmfObject::Boolean(true)),
-        ("field4".to_string(), AmfObject::Null),
-    ]
-    .iter()
-    .cloned()
-    .collect();
-    match encode_amf_messages(&[AmfObject::Object(object.clone())]) {
-        Ok(buffer) => {
-            if let Ok(AmfObject::Object(x)) = decode_amf_message_from_slice(&buffer) {
-                assert_eq!(x.len(), object.len());
-                assert!(x.keys().all(|k| object.contains_key(k)));
-            } else {
-                panic!();
-            }
+    #[test]
+    fn amf_parse_bool_false() {
+        let message = [0x1, 0x0];
+        if let Ok(AmfObject::Boolean(x)) = decode_amf_message_from_slice(&message) {
+            assert_eq!(x, false);
+        } else {
+            panic!();
         }
-        Err(_) => {
+    }
+
+    #[test]
+    fn amf_parse_bool_true() {
+        let message = [0x1, 0xA];
+        if let Ok(AmfObject::Boolean(x)) = decode_amf_message_from_slice(&message) {
+            assert_eq!(x, true);
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn amf_parse_string() {
+        let message = [0x2, 0x00, 0x4, 0x6A, 0x69, 0x7A, 0x7A];
+        if let Ok(AmfObject::String(x)) = decode_amf_message_from_slice(&message) {
+            assert_eq!(x, "jizz");
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn amf_encode_number() {
+        let buffer = encode_amf_messages(&[AmfObject::Number(7122.123_f64)]);
+        if let Ok(AmfObject::Number(x)) = decode_amf_message_from_slice(&buffer) {
+            assert_eq!(x, 7122.123_f64);
+        } else {
+            panic!();
+        }
+    }
+
+    #[test]
+    fn amf_encode_object() {
+        let object: HashMap<String, AmfObject> = [
+            (
+                "field1".to_string(),
+                AmfObject::String("value1".to_string()),
+            ),
+            ("field2".to_string(), AmfObject::Number(255.0_f64)),
+            ("field3".to_string(), AmfObject::Boolean(true)),
+            ("field4".to_string(), AmfObject::Null),
+        ]
+        .iter()
+        .cloned()
+        .collect();
+        let buffer = encode_amf_messages(&[AmfObject::Object(object.clone())]);
+        if let Ok(AmfObject::Object(x)) = decode_amf_message_from_slice(&buffer) {
+            assert_eq!(x.len(), object.len());
+            assert!(x.keys().all(|k| object.contains_key(k)));
+        } else {
             panic!();
         }
     }
