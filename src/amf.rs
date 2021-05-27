@@ -25,8 +25,10 @@ pub enum AmfObject {
     Number(f64),
     Boolean(bool),
     Object(HashMap<String, AmfObject>),
+    EcmaArray(Vec<(String, AmfObject)>),
     Null,
     Undefined,
+    ObjectEnd,
     Reference(u16),
 }
 
@@ -57,6 +59,9 @@ impl<'a> From<&'a Vec<u8>> for AmfByteReader<'a> {
 impl<'a> Read for AmfByteReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         let len = buf.len();
+        if self.ptr + len >= self.buffer.len() {
+            return Err(Error::new(ErrorKind::UnexpectedEof, "Out-of-bound read"));
+        }
         buf.copy_from_slice(&self.buffer[self.ptr..self.ptr + len]);
         self.ptr += len;
         Ok(len)
@@ -66,7 +71,10 @@ impl<'a> Read for AmfByteReader<'a> {
 impl<'a> AmfByteReader<'a> {
     fn read_one(&mut self) -> Result<u8> {
         if self.ptr == self.buffer.len() {
-            return Err(Error::new(ErrorKind::UnexpectedEof, "Invalid read when the buffer is empty"));
+            return Err(Error::new(
+                ErrorKind::UnexpectedEof,
+                "Invalid read when the buffer is empty",
+            ));
         }
         let result = self.buffer[self.ptr];
         self.ptr += 1;
@@ -88,30 +96,39 @@ pub fn decode_amf_number(reader: &mut AmfByteReader, verify_marker: bool) -> Res
     Ok(f64::from_be_bytes(buffer))
 }
 
+fn decode_amf_object_property(reader: &mut AmfByteReader) -> Result<Option<(String, AmfObject)>> {
+    let mut buffer = [0x0; 2];
+    reader.read_exact(&mut buffer)?;
+    let str_size = u16::from_be_bytes(buffer);
+    if str_size == 0 {
+        return Ok(None);
+    }
+    let mut str_buffer = vec![0x0; str_size as usize];
+    reader.read_exact(&mut str_buffer)?;
+    Ok(Some((
+        String::from_utf8(str_buffer).expect("UTF-8 string"),
+        decode_amf_message(reader)?,
+    )))
+}
+
 pub fn decode_amf_object(
     reader: &mut AmfByteReader,
     verify_marker: bool,
 ) -> Result<HashMap<String, AmfObject>> {
-    let mut map: HashMap<String, AmfObject> = HashMap::new();
     if verify_marker {
         let type_marker = reader.read_one()?;
         assert_eq!(type_marker, OBJECT_MARKER);
     }
+    let mut map: HashMap<String, AmfObject> = HashMap::new();
     loop {
-        let mut buffer = [0x0; 2];
-        reader.read_exact(&mut buffer)?;
-        let str_size = u16::from_be_bytes(buffer);
-        if str_size == 0 {
-            let next_type_marker = reader.read_one()?;
-            assert_eq!(next_type_marker, OBJECT_END_MARKER);
-            break;
-        } else {
-            let mut str_buffer = vec![0x0; str_size as usize];
-            reader.read_exact(&mut str_buffer)?;
-            map.insert(
-                String::from_utf8(str_buffer).expect("UTF-8 string"),
-                decode_amf_message(reader)?,
-            );
+        match decode_amf_object_property(reader)? {
+            Some((key, value)) => {
+                map.insert(key, value);
+            }
+            None => {
+                assert_eq!(reader.read_one()?, OBJECT_END_MARKER);
+                break;
+            }
         }
     }
     Ok(map)
@@ -148,6 +165,31 @@ pub fn decode_amf_boolean(reader: &mut AmfByteReader, verify_marker: bool) -> Re
     Ok(buffer[0] != 0)
 }
 
+pub fn decode_amf_ecma_array(
+    reader: &mut AmfByteReader,
+    verify_marker: bool,
+) -> Result<Vec<(String, AmfObject)>> {
+    if verify_marker {
+        let type_marker = reader.read_one()?;
+        assert_eq!(type_marker, ECMA_ARRAY_MARKER);
+    }
+    let mut buffer = [0x0; 4];
+    reader.read_exact(&mut buffer)?;
+    let mut result = Vec::new();
+    let size = u32::from_be_bytes(buffer);
+    for _ in 0..size {
+        match decode_amf_object_property(reader)? {
+            Some((key, value)) => {
+                result.push((key, value));
+            }
+            None => {
+                assert_eq!(reader.read_one()?, OBJECT_END_MARKER);
+            }
+        }
+    }
+    Ok(result)
+}
+
 pub fn decode_amf_message(reader: &mut AmfByteReader) -> Result<AmfObject> {
     let type_marker = reader.read_one()?;
     match type_marker {
@@ -156,7 +198,12 @@ pub fn decode_amf_message(reader: &mut AmfByteReader) -> Result<AmfObject> {
         STRING_MARKER => Ok(AmfObject::String(decode_amf_string(reader, false)?)),
         OBJECT_MARKER => Ok(AmfObject::Object(decode_amf_object(reader, false)?)),
         NULL_MARKER => Ok(AmfObject::Null),
-        _ => Err(Error::new(ErrorKind::InvalidData, "Invalid type marker")),
+        ECMA_ARRAY_MARKER => Ok(AmfObject::EcmaArray(decode_amf_ecma_array(reader, false)?)),
+        OBJECT_END_MARKER => Ok(AmfObject::ObjectEnd),
+        _ => Err(Error::new(
+            ErrorKind::InvalidData,
+            format!("Invalid type marker {}", type_marker),
+        )),
     }
 }
 

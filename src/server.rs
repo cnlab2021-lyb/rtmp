@@ -185,6 +185,16 @@ impl RtmpServer {
         }
     }
 
+    fn handle_data_message(&mut self, message: Message) -> Result<()> {
+        eprintln!("Handle data message");
+        let mut reader = AmfByteReader::from(&message.message);
+        while !reader.finish() {
+            let msg = decode_amf_message(&mut reader)?;
+            eprintln!("msg = {:?}", msg);
+        }
+        Ok(())
+    }
+
     fn handle_set_chunk_size(&mut self, message: Message) {
         let mut buffer = [0x0; 4];
         buffer.copy_from_slice(&message.message);
@@ -196,6 +206,10 @@ impl RtmpServer {
             RTMP_COMMAND_MESSAGE_AMF0 => {
                 // AMF-0 encoded control message.
                 self.handle_command_message(message)?;
+            }
+            RTMP_DATA_MESSAGE_AMF0 => {
+                // AMF-0 encoded data message.
+                self.handle_data_message(message)?;
             }
             RTMP_COMMAND_MESSAGE_AMF3 | RTMP_DATA_MESSAGE_AMF3 => {
                 return Err(Error::new(
