@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 
-use super::error::{Result, RtmpError};
+use super::error::{Error, Result};
 use super::utils::{aggregate, read_numeric, read_u32};
 
 pub struct RtmpStream {
@@ -59,7 +59,7 @@ impl RtmpStream {
     fn read_chunk_message_header(&mut self, chunk_type: u8) -> Result<ChunkMessageHeader> {
         const CHUNK_MESSAGE_HEADER_SIZE: [u8; 4] = [11, 7, 3, 0];
         let mut buffer = vec![0x0; CHUNK_MESSAGE_HEADER_SIZE[chunk_type as usize] as usize];
-        self.stream.read_exact(&mut buffer).map_err(RtmpError::Io)?;
+        self.stream.read_exact(&mut buffer).map_err(Error::Io)?;
         let mut message_header = match &self.prev_message_header {
             None => ChunkMessageHeader::default(),
             Some(header) => header.clone(),
@@ -78,9 +78,9 @@ impl RtmpStream {
         // TODO: Handle type 3 header
         if chunk_type < 3 && timestamp >= 0xFFFFFF {
             if timestamp != 0xFFFFFF {
-                return Err(RtmpError::InvalidTimestamp);
+                return Err(Error::InvalidTimestamp);
             }
-            timestamp = read_u32(&mut self.stream).map_err(RtmpError::Io)?;
+            timestamp = read_u32(&mut self.stream).map_err(Error::Io)?;
         }
         if chunk_type == 0 {
             message_header.timestamp = timestamp;
@@ -91,14 +91,14 @@ impl RtmpStream {
     }
 
     pub fn read_message(&mut self) -> Result<Option<Message>> {
-        let basic_header = self.read_chunk_basic_header().map_err(RtmpError::Io)?;
+        let basic_header = self.read_chunk_basic_header().map_err(Error::Io)?;
         let message_header = self.read_chunk_message_header(basic_header.chunk_type)?;
         let mut result = None;
         match self.channels.get_mut(&basic_header.chunk_stream_id) {
             None => {
                 let buffer_size = std::cmp::min(self.max_chunk_size, message_header.message_length);
                 let mut buffer = vec![0x0; buffer_size];
-                self.stream.read_exact(&mut buffer).map_err(RtmpError::Io)?;
+                self.stream.read_exact(&mut buffer).map_err(Error::Io)?;
                 if buffer_size == message_header.message_length {
                     result = Some(Message {
                         header: message_header.clone(),
@@ -121,7 +121,7 @@ impl RtmpStream {
                     message.header.message_length - message.message.len(),
                 );
                 let mut buffer = vec![0x0; buffer_size];
-                self.stream.read_exact(&mut buffer).map_err(RtmpError::Io)?;
+                self.stream.read_exact(&mut buffer).map_err(Error::Io)?;
                 message.message.extend_from_slice(&buffer);
                 if message.message.len() == message.header.message_length {
                     result = self.channels.remove(&basic_header.chunk_stream_id);
@@ -135,9 +135,9 @@ impl RtmpStream {
     pub fn handle_handshake(&mut self) -> Result<()> {
         let mut c0 = [0x0; 1];
         let s0 = [0x3; 1];
-        self.stream.read_exact(&mut c0).map_err(RtmpError::Io)?;
+        self.stream.read_exact(&mut c0).map_err(Error::Io)?;
         assert_eq!(c0[0], 0x3);
-        self.stream.write_all(&s0).map_err(RtmpError::Io)?;
+        self.stream.write_all(&s0).map_err(Error::Io)?;
         const HANDSHAKE_SIZE: usize = 1536;
         let (mut c1, mut c2, mut s1, mut s2) = (
             [0x0; HANDSHAKE_SIZE],
@@ -146,15 +146,15 @@ impl RtmpStream {
             [0x0; HANDSHAKE_SIZE],
         );
         s1[8..].fill(0x11);
-        self.stream.read_exact(&mut c1).map_err(RtmpError::Io)?;
-        self.stream.write_all(&s1).map_err(RtmpError::Io)?;
+        self.stream.read_exact(&mut c1).map_err(Error::Io)?;
+        self.stream.write_all(&s1).map_err(Error::Io)?;
         s2[8..].copy_from_slice(&c1[8..]);
-        self.stream.write_all(&s2).map_err(RtmpError::Io)?;
-        self.stream.read_exact(&mut c2).map_err(RtmpError::Io)?;
+        self.stream.write_all(&s2).map_err(Error::Io)?;
+        self.stream.read_exact(&mut c2).map_err(Error::Io)?;
         if c2[8..] == s1[8..] {
             Ok(())
         } else {
-            Err(RtmpError::HandshakeCorrupted)
+            Err(Error::HandshakeCorrupted)
         }
     }
 
@@ -163,20 +163,20 @@ impl RtmpStream {
             let byte = (header.chunk_stream_id as u8) | (header.chunk_type << 6);
             self.stream
                 .write_all(&byte.to_be_bytes())
-                .map_err(RtmpError::Io)?;
+                .map_err(Error::Io)?;
         } else if header.chunk_stream_id < 320 {
             let buffer = [
                 header.chunk_type << 6 | 1,
                 (header.chunk_stream_id - 64) as u8,
             ];
-            self.stream.write_all(&buffer).map_err(RtmpError::Io)?;
+            self.stream.write_all(&buffer).map_err(Error::Io)?;
         } else {
             let buffer = [
                 header.chunk_type << 6,
                 ((header.chunk_stream_id - 64) >> 8) as u8,
                 ((header.chunk_stream_id - 64) & 255) as u8,
             ];
-            self.stream.write_all(&buffer).map_err(RtmpError::Io)?;
+            self.stream.write_all(&buffer).map_err(Error::Io)?;
         }
         Ok(())
     }
@@ -213,7 +213,7 @@ impl RtmpStream {
         if chunk_type < 3 && header.timestamp >= 0xFFFFFF {
             buffer.extend_from_slice(&header.timestamp.to_be_bytes());
         }
-        self.stream.write_all(&buffer).map_err(RtmpError::Io)?;
+        self.stream.write_all(&buffer).map_err(Error::Io)?;
         Ok(())
     }
 
@@ -243,7 +243,7 @@ impl RtmpStream {
             )?;
             self.stream
                 .write_all(&message[ptr..ptr + size])
-                .map_err(RtmpError::Io)?;
+                .map_err(Error::Io)?;
             ptr += size;
         }
         Ok(())

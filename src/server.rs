@@ -3,7 +3,7 @@ use std::io::Cursor;
 use std::net::TcpStream;
 
 use super::amf::*;
-use super::error::{Result, RtmpError};
+use super::error::{Error, Result};
 use super::stream::*;
 
 pub struct RtmpServer {
@@ -11,10 +11,10 @@ pub struct RtmpServer {
 }
 
 const RTMP_SET_CHUNK_SIZE: u8 = 0x1;
-const RTMP_ABORT_MESSAGE: u8 = 0x2;
-const RTMP_ACK: u8 = 0x3;
-const RTMP_WINDOW_ACK_SIZE: u8 = 0x5;
-const RTMP_SET_PEER_BANDWIDTH: u8 = 0x6;
+// const RTMP_ABORT_MESSAGE: u8 = 0x2;
+// const RTMP_ACK: u8 = 0x3;
+// const RTMP_WINDOW_ACK_SIZE: u8 = 0x5;
+// const RTMP_SET_PEER_BANDWIDTH: u8 = 0x6;
 
 const RTMP_COMMAND_MESSAGE_AMF0: u8 = 20;
 const RTMP_COMMAND_MESSAGE_AMF3: u8 = 17;
@@ -25,8 +25,8 @@ const RTMP_VIDEO_MESSAGE: u8 = 9;
 
 const RTMP_NET_CONNECTION_STREAM_ID: u32 = 0;
 
-const PROTOCOL_CONTROL_MESSAGE_STREAM_ID: u32 = 0;
-const PROTOCOL_CONTROL_CHUNK_STREAM_ID: u16 = 0x2;
+// const PROTOCOL_CONTROL_MESSAGE_STREAM_ID: u32 = 0;
+// const PROTOCOL_CONTROL_CHUNK_STREAM_ID: u16 = 0x2;
 
 impl RtmpServer {
     #[allow(clippy::float_cmp)]
@@ -105,7 +105,7 @@ impl RtmpServer {
                 )?;
                 Ok(())
             }
-            _ => Err(RtmpError::UnexpectedAmfObjectType),
+            _ => Err(Error::UnexpectedAmfObjectType),
         }
     }
 
@@ -159,12 +159,17 @@ impl RtmpServer {
         Ok(())
     }
 
-    fn handle_command_message(&mut self, message: Message) -> Result<()> {
+    fn handle_delete_stream(&mut self, reader: Cursor<Vec<u8>>) -> Result<()> {
+        Ok(())
+    }
+
+    fn handle_command_message(&mut self, message: Message) -> Result<bool> {
         let mut reader = Cursor::new(message.message);
         if let AmfObject::String(cmd) = decode_amf_message(&mut reader)? {
             eprintln!("cmd = {}", cmd);
             match cmd.as_str() {
                 "connect" => self.handle_connect(reader)?,
+                "deleteStream" => self.handle_delete_stream(reader)?,
                 "releaseStream" => self.handle_release_stream(reader)?,
                 "FCPublish" => self.handle_fc_publish(reader)?,
                 "createStream" => self.handle_create_stream(reader, message.header)?,
@@ -172,17 +177,23 @@ impl RtmpServer {
                 "publish" => self.handle_publish(reader)?,
                 _ => {}
             }
-            Ok(())
+            Ok(cmd == "deleteStream")
         } else {
-            Err(RtmpError::NonStringCommand)
+            Err(Error::NonStringCommand)
         }
     }
 
     fn handle_data_message(&mut self, message: Message) -> Result<()> {
         eprintln!("Handle data message");
         let mut reader = Cursor::new(message.message);
-        let msg = decode_amf_message(&mut reader)?;
-        eprintln!("msg = {:?}", msg);
+        if decode_amf_string(&mut reader, true)? != "@setDataFrame" {
+            return Err(Error::UnknownDataMessage);
+        }
+        if decode_amf_string(&mut reader, true)? != "onMetaData" {
+            return Err(Error::UnknownDataMessage);
+        }
+        let prop = decode_amf_ecma_array(&mut reader, true)?;
+        eprintln!("{:?}", prop);
         Ok(())
     }
 
@@ -192,18 +203,20 @@ impl RtmpServer {
         self.stream.max_chunk_size = u32::from_be_bytes(buffer) as usize;
     }
 
-    fn handle_message(&mut self, message: Message) -> Result<()> {
+    fn handle_message(&mut self, message: Message) -> Result<bool> {
         match message.header.message_type_id {
             RTMP_COMMAND_MESSAGE_AMF0 => {
                 // AMF-0 encoded control message.
-                self.handle_command_message(message)?;
+                if self.handle_command_message(message)? {
+                    return Ok(true);
+                }
             }
             RTMP_DATA_MESSAGE_AMF0 => {
                 // AMF-0 encoded data message.
                 self.handle_data_message(message)?;
             }
             RTMP_COMMAND_MESSAGE_AMF3 | RTMP_DATA_MESSAGE_AMF3 => {
-                return Err(RtmpError::Amf3NotSupported);
+                return Err(Error::Amf3NotSupported);
             }
             RTMP_SET_CHUNK_SIZE => {
                 self.handle_set_chunk_size(message);
@@ -212,7 +225,7 @@ impl RtmpServer {
             RTMP_VIDEO_MESSAGE => {}
             _ => {}
         }
-        Ok(())
+        Ok(false)
     }
 
     pub fn serve(&mut self) -> Result<()> {
@@ -223,7 +236,9 @@ impl RtmpServer {
                 Some(message) => {
                     eprintln!("message = {:?}", message);
                     assert_eq!(message.message.len(), message.header.message_length);
-                    self.handle_message(message)?;
+                    if self.handle_message(message)? {
+                        return Ok(());
+                    }
                 }
             }
         }
