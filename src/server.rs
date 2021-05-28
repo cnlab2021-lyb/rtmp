@@ -1,8 +1,9 @@
 use std::collections::HashMap;
-use std::io::{Cursor, Error, ErrorKind, Result};
+use std::io::Cursor;
 use std::net::TcpStream;
 
 use super::amf::*;
+use super::error::{Result, RtmpError};
 use super::stream::*;
 
 pub struct RtmpServer {
@@ -104,7 +105,7 @@ impl RtmpServer {
                 )?;
                 Ok(())
             }
-            _ => Err(Error::new(ErrorKind::InvalidData, "Expect Object or Null")),
+            _ => Err(RtmpError::UnexpectedAmfObjectType),
         }
     }
 
@@ -173,10 +174,7 @@ impl RtmpServer {
             }
             Ok(())
         } else {
-            Err(Error::new(
-                ErrorKind::InvalidData,
-                "Expect command name to be of type String",
-            ))
+            Err(RtmpError::NonStringCommand)
         }
     }
 
@@ -205,10 +203,7 @@ impl RtmpServer {
                 self.handle_data_message(message)?;
             }
             RTMP_COMMAND_MESSAGE_AMF3 | RTMP_DATA_MESSAGE_AMF3 => {
-                return Err(Error::new(
-                    ErrorKind::InvalidData,
-                    "AMF-3 is not supported.",
-                ));
+                return Err(RtmpError::Amf3NotSupported);
             }
             RTMP_SET_CHUNK_SIZE => {
                 self.handle_set_chunk_size(message);

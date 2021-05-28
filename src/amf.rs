@@ -1,6 +1,7 @@
-use super::read::*;
+use super::error::{Result, RtmpError};
+use super::utils::*;
 use std::collections::HashMap;
-use std::io::{Cursor, Error, ErrorKind, Read, Result};
+use std::io::{Cursor, Read};
 
 const NUMBER_MARKER: u8 = 0x0;
 const BOOLEAN_MARKER: u8 = 0x1;
@@ -32,25 +33,32 @@ pub enum AmfObject {
     Reference(u16),
 }
 
-pub fn decode_amf_number(reader: &mut Cursor<Vec<u8>>, verify_marker: bool) -> Result<f64> {
-    if verify_marker {
-        let type_marker = read_u8(reader)?;
-        assert_eq!(type_marker, NUMBER_MARKER);
+fn verify_type_marker(reader: &mut Cursor<Vec<u8>>, expected_type_marker: u8) -> Result<()> {
+    if read_u8(reader).map_err(RtmpError::Io)? == expected_type_marker {
+        Ok(())
+    } else {
+        Err(RtmpError::AmfIncorrectTypeMarker)
     }
-    read_f64(reader)
 }
 
 fn decode_amf_object_property(reader: &mut Cursor<Vec<u8>>) -> Result<Option<(String, AmfObject)>> {
-    let str_size = read_u16(reader)?;
+    let str_size = read_u16(reader).map_err(RtmpError::Io)?;
     if str_size == 0 {
         return Ok(None);
     }
     let mut str_buffer = vec![0x0; str_size as usize];
-    reader.read_exact(&mut str_buffer)?;
+    reader.read_exact(&mut str_buffer).map_err(RtmpError::Io)?;
     Ok(Some((
         String::from_utf8(str_buffer).expect("UTF-8 string"),
         decode_amf_message(reader)?,
     )))
+}
+
+pub fn decode_amf_number(reader: &mut Cursor<Vec<u8>>, verify_marker: bool) -> Result<f64> {
+    if verify_marker {
+        verify_type_marker(reader, NUMBER_MARKER)?;
+    }
+    read_f64(reader).map_err(RtmpError::Io)
 }
 
 pub fn decode_amf_object(
@@ -58,8 +66,7 @@ pub fn decode_amf_object(
     verify_marker: bool,
 ) -> Result<HashMap<String, AmfObject>> {
     if verify_marker {
-        let type_marker = read_u8(reader)?;
-        assert_eq!(type_marker, OBJECT_MARKER);
+        verify_type_marker(reader, OBJECT_MARKER)?;
     }
     let mut map: HashMap<String, AmfObject> = HashMap::new();
     loop {
@@ -68,7 +75,7 @@ pub fn decode_amf_object(
                 map.insert(key, value);
             }
             None => {
-                assert_eq!(read_u8(reader)?, OBJECT_END_MARKER);
+                verify_type_marker(reader, OBJECT_END_MARKER)?;
                 break;
             }
         }
@@ -78,29 +85,26 @@ pub fn decode_amf_object(
 
 pub fn decode_amf_null(reader: &mut Cursor<Vec<u8>>, verify_marker: bool) -> Result<()> {
     if verify_marker {
-        let type_marker = read_u8(reader)?;
-        assert_eq!(type_marker, NULL_MARKER);
+        verify_type_marker(reader, NULL_MARKER)?;
     }
     Ok(())
 }
 
 pub fn decode_amf_string(reader: &mut Cursor<Vec<u8>>, verify_marker: bool) -> Result<String> {
     if verify_marker {
-        let type_marker = read_u8(reader)?;
-        assert_eq!(type_marker, STRING_MARKER);
+        verify_type_marker(reader, STRING_MARKER)?;
     }
-    let size = read_u16(reader)?;
+    let size = read_u16(reader).map_err(RtmpError::Io)?;
     let mut buffer = vec![0x0; size as usize];
-    reader.read_exact(&mut buffer)?;
+    reader.read_exact(&mut buffer).map_err(RtmpError::Io)?;
     Ok(String::from_utf8(buffer).expect("UTF-8 string"))
 }
 
 pub fn decode_amf_boolean(reader: &mut Cursor<Vec<u8>>, verify_marker: bool) -> Result<bool> {
     if verify_marker {
-        let type_marker = read_u8(reader)?;
-        assert_eq!(type_marker, BOOLEAN_MARKER);
+        verify_type_marker(reader, BOOLEAN_MARKER)?;
     }
-    Ok(read_u8(reader)? != 0)
+    Ok(read_u8(reader).map_err(RtmpError::Io)? != 0)
 }
 
 pub fn decode_amf_ecma_array(
@@ -108,22 +112,23 @@ pub fn decode_amf_ecma_array(
     verify_marker: bool,
 ) -> Result<Vec<(String, AmfObject)>> {
     if verify_marker {
-        let type_marker = read_u8(reader)?;
-        assert_eq!(type_marker, ECMA_ARRAY_MARKER);
+        verify_type_marker(reader, ECMA_ARRAY_MARKER)?;
     }
     let mut result = Vec::new();
-    for _ in 0..read_u32(reader)? {
+    for _ in 0..read_u32(reader).map_err(RtmpError::Io)? {
         if let Some((key, value)) = decode_amf_object_property(reader)? {
             result.push((key, value));
         }
     }
-    assert_matches!(decode_amf_object_property(reader)?, None);
-    assert_eq!(read_u8(reader)?, OBJECT_END_MARKER);
+    if !(matches!(decode_amf_object_property(reader)?, None)) {
+        return Err(RtmpError::AmfIncorrectObjectProperty);
+    }
+    verify_type_marker(reader, OBJECT_END_MARKER)?;
     Ok(result)
 }
 
 pub fn decode_amf_message(reader: &mut Cursor<Vec<u8>>) -> Result<AmfObject> {
-    let type_marker = read_u8(reader)?;
+    let type_marker = read_u8(reader).map_err(RtmpError::Io)?;
     match type_marker {
         NUMBER_MARKER => Ok(AmfObject::Number(decode_amf_number(reader, false)?)),
         BOOLEAN_MARKER => Ok(AmfObject::Boolean(decode_amf_boolean(reader, false)?)),
@@ -131,10 +136,7 @@ pub fn decode_amf_message(reader: &mut Cursor<Vec<u8>>) -> Result<AmfObject> {
         OBJECT_MARKER => Ok(AmfObject::Object(decode_amf_object(reader, false)?)),
         NULL_MARKER => Ok(AmfObject::Null),
         ECMA_ARRAY_MARKER => Ok(AmfObject::EcmaArray(decode_amf_ecma_array(reader, false)?)),
-        _ => Err(Error::new(
-            ErrorKind::InvalidData,
-            format!("Invalid type marker {}", type_marker),
-        )),
+        _ => Err(RtmpError::AmfIncorrectTypeMarker),
     }
 }
 
