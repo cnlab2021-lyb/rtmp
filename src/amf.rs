@@ -46,10 +46,9 @@ fn decode_amf_object_property(reader: &mut Cursor<Vec<u8>>) -> Result<Option<(St
     if str_size == 0 {
         return Ok(None);
     }
-    let mut str_buffer = vec![0x0; str_size as usize];
-    reader.read_exact(&mut str_buffer).map_err(Error::Io)?;
     Ok(Some((
-        String::from_utf8(str_buffer).expect("UTF-8 string"),
+        String::from_utf8(read_buffer(reader, str_size as usize).map_err(Error::Io)?)
+            .expect("UTF-8 string"),
         decode_amf_message(reader)?,
     )))
 }
@@ -95,9 +94,10 @@ pub fn decode_amf_string(reader: &mut Cursor<Vec<u8>>, verify_marker: bool) -> R
         verify_type_marker(reader, STRING_MARKER)?;
     }
     let size = read_u16(reader).map_err(Error::Io)?;
-    let mut buffer = vec![0x0; size as usize];
-    reader.read_exact(&mut buffer).map_err(Error::Io)?;
-    Ok(String::from_utf8(buffer).expect("UTF-8 string"))
+    Ok(
+        String::from_utf8(read_buffer(reader, size as usize).map_err(Error::Io)?)
+            .expect("UTF-8 string"),
+    )
 }
 
 pub fn decode_amf_boolean(reader: &mut Cursor<Vec<u8>>, verify_marker: bool) -> Result<bool> {
