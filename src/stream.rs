@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::net::TcpStream;
 
 use super::error::{Error, Result};
@@ -67,10 +67,6 @@ impl RtmpStream {
             None => ChunkMessageHeader::default(),
             Some(header) => header.clone(),
         };
-        let mut timestamp = 0;
-        if chunk_type < 3 {
-            timestamp = aggregate::<u32>(&buffer[0..3], false);
-        }
         if chunk_type < 2 {
             message_header.message_length = aggregate::<usize>(&buffer[3..6], false);
             message_header.message_type_id = buffer[6];
@@ -78,17 +74,20 @@ impl RtmpStream {
         if chunk_type == 0 {
             message_header.message_stream_id = aggregate::<u32>(&buffer[7..11], true);
         }
-        // TODO: Handle type 3 header
-        if chunk_type < 3 && timestamp >= 0xFFFFFF {
-            if timestamp != 0xFFFFFF {
-                return Err(Error::InvalidTimestamp);
+        if chunk_type < 3 {
+            let timestamp = aggregate::<u32>(&buffer[0..3], false);
+            let timestamp = match timestamp {
+                0..=0xFFFFFE => timestamp,
+                0xFFFFFF => read_u32(&mut self.stream).map_err(Error::Io)?,
+                _ => {
+                    return Err(Error::InvalidTimestamp);
+                }
+            };
+            if chunk_type == 0 {
+                message_header.timestamp = timestamp;
+            } else {
+                message_header.timestamp += timestamp;
             }
-            timestamp = read_u32(&mut self.stream).map_err(Error::Io)?;
-        }
-        if chunk_type == 0 {
-            message_header.timestamp = timestamp;
-        } else {
-            message_header.timestamp += timestamp;
         }
         Ok(message_header)
     }
@@ -143,7 +142,7 @@ impl RtmpStream {
         let c1 = read_buffer_sized::<_, HANDSHAKE_SIZE>(&mut self.stream).map_err(Error::Io)?;
         let s1 = [0x0; HANDSHAKE_SIZE];
         self.stream.write_all(&s1).map_err(Error::Io)?;
-        let s2 = c1.clone();
+        let s2 = c1;
         self.stream.write_all(&s2).map_err(Error::Io)?;
         let c2 = read_buffer_sized::<_, HANDSHAKE_SIZE>(&mut self.stream).map_err(Error::Io)?;
         if c2[8..] == s1[8..] {

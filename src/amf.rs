@@ -1,7 +1,7 @@
 use super::error::{Error, Result};
 use super::utils::*;
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
 const NUMBER_MARKER: u8 = 0x0;
 const BOOLEAN_MARKER: u8 = 0x1;
@@ -33,7 +33,10 @@ pub enum AmfObject {
     // Reference(u16),
 }
 
-fn verify_type_marker(reader: &mut Cursor<Vec<u8>>, expected_type_marker: u8) -> Result<()> {
+fn verify_type_marker<T: AsRef<[u8]>>(
+    reader: &mut Cursor<T>,
+    expected_type_marker: u8,
+) -> Result<()> {
     if read_u8(reader).map_err(Error::Io)? == expected_type_marker {
         Ok(())
     } else {
@@ -41,7 +44,9 @@ fn verify_type_marker(reader: &mut Cursor<Vec<u8>>, expected_type_marker: u8) ->
     }
 }
 
-fn decode_amf_object_property(reader: &mut Cursor<Vec<u8>>) -> Result<Option<(String, AmfObject)>> {
+fn decode_amf_object_property<T: AsRef<[u8]>>(
+    reader: &mut Cursor<T>,
+) -> Result<Option<(String, AmfObject)>> {
     let str_size = read_u16(reader).map_err(Error::Io)?;
     if str_size == 0 {
         return Ok(None);
@@ -53,15 +58,18 @@ fn decode_amf_object_property(reader: &mut Cursor<Vec<u8>>) -> Result<Option<(St
     )))
 }
 
-pub fn decode_amf_number(reader: &mut Cursor<Vec<u8>>, verify_marker: bool) -> Result<f64> {
+pub fn decode_amf_number<T: AsRef<[u8]>>(
+    reader: &mut Cursor<T>,
+    verify_marker: bool,
+) -> Result<f64> {
     if verify_marker {
         verify_type_marker(reader, NUMBER_MARKER)?;
     }
     read_f64(reader).map_err(Error::Io)
 }
 
-pub fn decode_amf_object(
-    reader: &mut Cursor<Vec<u8>>,
+pub fn decode_amf_object<T: AsRef<[u8]>>(
+    reader: &mut Cursor<T>,
     verify_marker: bool,
 ) -> Result<HashMap<String, AmfObject>> {
     if verify_marker {
@@ -82,14 +90,17 @@ pub fn decode_amf_object(
     Ok(map)
 }
 
-pub fn decode_amf_null(reader: &mut Cursor<Vec<u8>>, verify_marker: bool) -> Result<()> {
+pub fn decode_amf_null<T: AsRef<[u8]>>(reader: &mut Cursor<T>, verify_marker: bool) -> Result<()> {
     if verify_marker {
         verify_type_marker(reader, NULL_MARKER)?;
     }
     Ok(())
 }
 
-pub fn decode_amf_string(reader: &mut Cursor<Vec<u8>>, verify_marker: bool) -> Result<String> {
+pub fn decode_amf_string<T: AsRef<[u8]>>(
+    reader: &mut Cursor<T>,
+    verify_marker: bool,
+) -> Result<String> {
     if verify_marker {
         verify_type_marker(reader, STRING_MARKER)?;
     }
@@ -100,15 +111,18 @@ pub fn decode_amf_string(reader: &mut Cursor<Vec<u8>>, verify_marker: bool) -> R
     )
 }
 
-pub fn decode_amf_boolean(reader: &mut Cursor<Vec<u8>>, verify_marker: bool) -> Result<bool> {
+pub fn decode_amf_boolean<T: AsRef<[u8]>>(
+    reader: &mut Cursor<T>,
+    verify_marker: bool,
+) -> Result<bool> {
     if verify_marker {
         verify_type_marker(reader, BOOLEAN_MARKER)?;
     }
     Ok(read_u8(reader).map_err(Error::Io)? != 0)
 }
 
-pub fn decode_amf_ecma_array(
-    reader: &mut Cursor<Vec<u8>>,
+pub fn decode_amf_ecma_array<T: AsRef<[u8]>>(
+    reader: &mut Cursor<T>,
     verify_marker: bool,
 ) -> Result<Vec<(String, AmfObject)>> {
     if verify_marker {
@@ -127,7 +141,7 @@ pub fn decode_amf_ecma_array(
     Ok(result)
 }
 
-pub fn decode_amf_message(reader: &mut Cursor<Vec<u8>>) -> Result<AmfObject> {
+pub fn decode_amf_message<T: AsRef<[u8]>>(reader: &mut Cursor<T>) -> Result<AmfObject> {
     let type_marker = read_u8(reader).map_err(Error::Io)?;
     match type_marker {
         NUMBER_MARKER => Ok(AmfObject::Number(decode_amf_number(reader, false)?)),
@@ -138,6 +152,14 @@ pub fn decode_amf_message(reader: &mut Cursor<Vec<u8>>) -> Result<AmfObject> {
         ECMA_ARRAY_MARKER => Ok(AmfObject::EcmaArray(decode_amf_ecma_array(reader, false)?)),
         _ => Err(Error::AmfIncorrectTypeMarker),
     }
+}
+
+pub fn encode_amf_messages(src: &[AmfObject]) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    for obj in src {
+        encode_amf_message_impl(obj, &mut buffer);
+    }
+    buffer
 }
 
 fn encode_amf_message_impl(src: &AmfObject, message: &mut Vec<u8>) {
@@ -153,10 +175,7 @@ fn encode_amf_message_impl(src: &AmfObject, message: &mut Vec<u8>) {
         }
         AmfObject::Boolean(b) => {
             message.push(BOOLEAN_MARKER);
-            let byte = match b {
-                true => 1,
-                false => 0,
-            };
+            let byte = if *b { 1 } else { 0 };
             message.push(byte);
         }
         AmfObject::Object(obj) => {
@@ -166,9 +185,7 @@ fn encode_amf_message_impl(src: &AmfObject, message: &mut Vec<u8>) {
                 message.extend_from_slice(key.as_bytes());
                 encode_amf_message_impl(val, message);
             }
-            message.push(0x0);
-            message.push(0x0);
-            message.push(OBJECT_END_MARKER);
+            message.extend_from_slice(&[0x0, 0x0, OBJECT_END_MARKER]);
         }
         AmfObject::Null => {
             message.push(NULL_MARKER);
@@ -177,27 +194,15 @@ fn encode_amf_message_impl(src: &AmfObject, message: &mut Vec<u8>) {
     }
 }
 
-pub fn encode_amf_messages(src: &[AmfObject]) -> Vec<u8> {
-    let mut buffer = Vec::new();
-    for obj in src {
-        encode_amf_message_impl(obj, &mut buffer);
-    }
-    buffer
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn decode_amf_message_from_slice(buffer: &[u8]) -> Result<AmfObject> {
-        let mut reader = Cursor::new(Vec::from(buffer));
-        decode_amf_message(&mut reader)
-    }
-
     #[test]
     fn amf_parse_number() {
-        let message = [0x0; 9];
-        if let Ok(AmfObject::Number(x)) = decode_amf_message_from_slice(&message) {
+        let mut reader = Cursor::new([0x0; 9]);
+        if let Ok(AmfObject::Number(x)) = decode_amf_message(&mut reader) {
             assert_eq!(x, 0_f64);
         } else {
             panic!();
@@ -206,8 +211,8 @@ mod tests {
 
     #[test]
     fn amf_parse_bool_false() {
-        let message = [0x1, 0x0];
-        if let Ok(AmfObject::Boolean(x)) = decode_amf_message_from_slice(&message) {
+        let mut reader = Cursor::new([0x1, 0x0]);
+        if let Ok(AmfObject::Boolean(x)) = decode_amf_message(&mut reader) {
             assert_eq!(x, false);
         } else {
             panic!();
@@ -216,8 +221,8 @@ mod tests {
 
     #[test]
     fn amf_parse_bool_true() {
-        let message = [0x1, 0xA];
-        if let Ok(AmfObject::Boolean(x)) = decode_amf_message_from_slice(&message) {
+        let mut reader = Cursor::new([0x1, 0xA]);
+        if let Ok(AmfObject::Boolean(x)) = decode_amf_message(&mut reader) {
             assert_eq!(x, true);
         } else {
             panic!();
@@ -226,8 +231,8 @@ mod tests {
 
     #[test]
     fn amf_parse_string() {
-        let message = [0x2, 0x00, 0x4, 0x6A, 0x69, 0x7A, 0x7A];
-        if let Ok(AmfObject::String(x)) = decode_amf_message_from_slice(&message) {
+        let mut reader = Cursor::new([0x2, 0x00, 0x4, 0x6A, 0x69, 0x7A, 0x7A]);
+        if let Ok(AmfObject::String(x)) = decode_amf_message(&mut reader) {
             assert_eq!(x, "jizz");
         } else {
             panic!();
@@ -237,7 +242,7 @@ mod tests {
     #[test]
     fn amf_encode_number() {
         let buffer = encode_amf_messages(&[AmfObject::Number(7122.123_f64)]);
-        if let Ok(AmfObject::Number(x)) = decode_amf_message_from_slice(&buffer) {
+        if let Ok(AmfObject::Number(x)) = decode_amf_message(&mut Cursor::new(buffer)) {
             assert_eq!(x, 7122.123_f64);
         } else {
             panic!();
@@ -259,7 +264,7 @@ mod tests {
         .cloned()
         .collect();
         let buffer = encode_amf_messages(&[AmfObject::Object(object.clone())]);
-        if let Ok(AmfObject::Object(x)) = decode_amf_message_from_slice(&buffer) {
+        if let Ok(AmfObject::Object(x)) = decode_amf_message(&mut Cursor::new(buffer)) {
             assert_eq!(x.len(), object.len());
             assert!(x.keys().all(|k| object.contains_key(k)));
         } else {

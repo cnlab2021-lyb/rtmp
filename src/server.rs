@@ -59,7 +59,6 @@ impl RtmpServer {
             AmfObject::Object(properties),
             AmfObject::Object(information),
         ]);
-        eprintln!("send_message = {:?}", buffer);
         self.stream.send_message(
             3,
             RTMP_NET_CONNECTION_STREAM_ID,
@@ -159,7 +158,7 @@ impl RtmpServer {
         Ok(())
     }
 
-    fn handle_delete_stream(&mut self, reader: Cursor<Vec<u8>>) -> Result<()> {
+    fn handle_delete_stream(&mut self, _reader: Cursor<Vec<u8>>) -> Result<()> {
         Ok(())
     }
 
@@ -198,9 +197,12 @@ impl RtmpServer {
     }
 
     fn handle_set_chunk_size(&mut self, message: Message) {
+        assert_eq!(message.header.message_length, 4);
         let mut buffer = [0x0; 4];
         buffer.copy_from_slice(&message.message);
         self.stream.max_chunk_size = u32::from_be_bytes(buffer) as usize;
+        // The most-significant bit should not be set.
+        assert_eq!(self.stream.max_chunk_size >> 31, 0);
     }
 
     fn handle_message(&mut self, message: Message) -> Result<bool> {
@@ -235,7 +237,9 @@ impl RtmpServer {
                 None => {}
                 Some(message) => {
                     eprintln!("message = {:?}", message);
-                    assert_eq!(message.message.len(), message.header.message_length);
+                    if message.message.len() != message.header.message_length {
+                        return Err(Error::InconsistentMessageLength);
+                    }
                     if self.handle_message(message)? {
                         return Ok(());
                     }
