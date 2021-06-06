@@ -135,12 +135,17 @@ impl RtmpStream {
 
     pub fn handle_handshake(&mut self) -> Result<()> {
         let c0 = read_buffer_sized::<_, 1>(&mut self.stream).map_err(Error::Io)?;
-        assert_eq!(c0[0], 0x3);
+        if c0[0] != 0x3 {
+            return Err(Error::HandshakeCorrupted);
+        }
         let s0 = [0x3; 1];
         self.stream.write_all(&s0).map_err(Error::Io)?;
         const HANDSHAKE_SIZE: usize = 1536;
         let c1 = read_buffer_sized::<_, HANDSHAKE_SIZE>(&mut self.stream).map_err(Error::Io)?;
-        let s1 = [0x0; HANDSHAKE_SIZE];
+        // Send a buffer consisting of random bytes.
+        let s1: Vec<_> = (0..HANDSHAKE_SIZE)
+            .map(|i| if i < 8 { 0 } else { rand::random::<u8>() })
+            .collect();
         self.stream.write_all(&s1).map_err(Error::Io)?;
         let s2 = c1;
         self.stream.write_all(&s2).map_err(Error::Io)?;
@@ -213,7 +218,7 @@ impl RtmpStream {
         let mut ptr = 0;
         while ptr < message.len() {
             let size = std::cmp::min(self.max_chunk_size, message.len() - ptr);
-            let chunk_type: u8 = if ptr == 0 { 0 } else { 3 };
+            let chunk_type = if ptr == 0 { 0 } else { 3 };
             self.send_chunk_basic_header(ChunkBasicHeader {
                 chunk_stream_id,
                 chunk_type,

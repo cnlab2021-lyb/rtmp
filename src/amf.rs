@@ -21,7 +21,7 @@ const OBJECT_END_MARKER: u8 = 0x9;
 // const XML_DOCUMENT_MARKER: u8 = 0xF;
 // const TYPED_OBJECT_MARKER: u8 = 0x10;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AmfObject {
     String(String),
     Number(f64),
@@ -156,29 +156,28 @@ pub fn decode_amf_message<T: AsRef<[u8]>>(reader: &mut Cursor<T>) -> Result<AmfO
 
 pub fn encode_amf_messages(src: &[AmfObject]) -> Vec<u8> {
     let mut buffer = Vec::new();
-    for obj in src {
-        encode_amf_message_impl(obj, &mut buffer);
-    }
+    src.iter()
+        .for_each(|obj| encode_amf_message_impl(obj, &mut buffer));
     buffer
 }
 
 fn encode_amf_message_impl(src: &AmfObject, message: &mut Vec<u8>) {
-    match src {
-        AmfObject::String(s) => {
+    match *src {
+        AmfObject::String(ref s) => {
             message.push(STRING_MARKER);
             message.extend_from_slice(&(s.len() as u16).to_be_bytes());
             message.extend_from_slice(s.as_bytes());
         }
-        AmfObject::Number(x) => {
+        AmfObject::Number(ref x) => {
             message.push(NUMBER_MARKER);
             message.extend_from_slice(&x.to_be_bytes());
         }
-        AmfObject::Boolean(b) => {
+        AmfObject::Boolean(ref b) => {
             message.push(BOOLEAN_MARKER);
             let byte = if *b { 1 } else { 0 };
             message.push(byte);
         }
-        AmfObject::Object(obj) => {
+        AmfObject::Object(ref obj) => {
             message.push(OBJECT_MARKER);
             for (key, val) in obj.iter() {
                 message.extend_from_slice(&(key.len() as u16).to_be_bytes());
@@ -194,7 +193,6 @@ fn encode_amf_message_impl(src: &AmfObject, message: &mut Vec<u8>) {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,7 +203,7 @@ mod tests {
         if let Ok(AmfObject::Number(x)) = decode_amf_message(&mut reader) {
             assert_eq!(x, 0_f64);
         } else {
-            panic!();
+            panic!("Test failed");
         }
     }
 
@@ -215,7 +213,7 @@ mod tests {
         if let Ok(AmfObject::Boolean(x)) = decode_amf_message(&mut reader) {
             assert_eq!(x, false);
         } else {
-            panic!();
+            panic!("Test failed");
         }
     }
 
@@ -225,7 +223,7 @@ mod tests {
         if let Ok(AmfObject::Boolean(x)) = decode_amf_message(&mut reader) {
             assert_eq!(x, true);
         } else {
-            panic!();
+            panic!("Test failed");
         }
     }
 
@@ -235,7 +233,7 @@ mod tests {
         if let Ok(AmfObject::String(x)) = decode_amf_message(&mut reader) {
             assert_eq!(x, "jizz");
         } else {
-            panic!();
+            panic!("Test failed");
         }
     }
 
@@ -245,7 +243,7 @@ mod tests {
         if let Ok(AmfObject::Number(x)) = decode_amf_message(&mut Cursor::new(buffer)) {
             assert_eq!(x, 7122.123_f64);
         } else {
-            panic!();
+            panic!("Test failed");
         }
     }
 
@@ -264,11 +262,14 @@ mod tests {
         .cloned()
         .collect();
         let buffer = encode_amf_messages(&[AmfObject::Object(object.clone())]);
-        if let Ok(AmfObject::Object(x)) = decode_amf_message(&mut Cursor::new(buffer)) {
-            assert_eq!(x.len(), object.len());
-            assert!(x.keys().all(|k| object.contains_key(k)));
+        if let Ok(AmfObject::Object(amf)) = decode_amf_message(&mut Cursor::new(buffer)) {
+            assert_eq!(amf.len(), object.len());
+            for i in 1..5 {
+                let key = format!("field{}", i);
+                assert_eq!(object.get(&key), amf.get(&key));
+            }
         } else {
-            panic!();
+            panic!("Test failed");
         }
     }
 }
