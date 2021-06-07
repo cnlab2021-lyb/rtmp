@@ -12,9 +12,10 @@ pub struct RtmpServer {
 
 const RTMP_SET_CHUNK_SIZE: u8 = 0x1;
 // const RTMP_ABORT_MESSAGE: u8 = 0x2;
-// const RTMP_ACK: u8 = 0x3;
-// const RTMP_WINDOW_ACK_SIZE: u8 = 0x5;
-// const RTMP_SET_PEER_BANDWIDTH: u8 = 0x6;
+const RTMP_ACKNOWLEDGEMENT: u8 = 0x3;
+const RTMP_USER_CONTROL_MESSAGE: u8 = 0x4;
+const RTMP_WINDOW_ACK_SIZE: u8 = 0x5;
+const RTMP_SET_PEER_BANDWIDTH: u8 = 0x6;
 
 const RTMP_COMMAND_MESSAGE_AMF0: u8 = 20;
 const RTMP_COMMAND_MESSAGE_AMF3: u8 = 17;
@@ -25,8 +26,8 @@ const RTMP_VIDEO_MESSAGE: u8 = 9;
 
 const RTMP_NET_CONNECTION_STREAM_ID: u32 = 0;
 
-// const PROTOCOL_CONTROL_MESSAGE_STREAM_ID: u32 = 0;
-// const PROTOCOL_CONTROL_CHUNK_STREAM_ID: u16 = 0x2;
+const RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID: u32 = 0;
+const RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID: u16 = 0x2;
 
 impl RtmpServer {
     #[allow(clippy::float_cmp)]
@@ -35,24 +36,68 @@ impl RtmpServer {
         assert_eq!(transaction_id, 1_f64);
         let cmd_object = decode_amf_object(&mut reader, true)?;
         eprintln!("cmd_object = {:?}", cmd_object);
-        // TODO: Set window size, peer bandwidth, StreamBegin.
+        // TODO: Set window size, peer bandwidth.
 
-        // TODO: Fill properties and Information
+        {
+            self.stream.send_message(
+                RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
+                RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID,
+                RTMP_ACKNOWLEDGEMENT,
+                &7122_u32.to_be_bytes(),
+            )?;
+            let mut buffer = Vec::from(1048576_u32.to_be_bytes());
+            // Send acknowledgement.
+            // Set window acknowledgement size.
+            self.stream.send_message(
+                RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
+                RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID,
+                RTMP_WINDOW_ACK_SIZE,
+                &buffer,
+            )?;
+            buffer.push(2);
+            // Set peer bandwidth.
+            self.stream.send_message(
+                RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
+                RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID,
+                RTMP_SET_PEER_BANDWIDTH,
+                &buffer,
+            )?;
+            // Send user control message: StreamBegin.
+            self.stream.send_message(
+                RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
+                RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID,
+                RTMP_USER_CONTROL_MESSAGE,
+                &[0x0; 6],
+            )?;
+        }
+
+        // TODO: Fill properties and Information.
         let properties: HashMap<String, AmfObject> = [
             (
                 "fmsVer".to_string(),
                 AmfObject::String("FMS/4,5,0,297".to_string()),
             ),
             ("capabilities".to_string(), AmfObject::Number(255.0_f64)),
+            ("mode".to_string(), AmfObject::Number(1.0)),
         ]
         .iter()
         .cloned()
         .collect();
-        let information: HashMap<String, AmfObject> =
-            [("level".to_string(), AmfObject::String("status".to_string()))]
-                .iter()
-                .cloned()
-                .collect();
+        let information: HashMap<String, AmfObject> = [
+            ("level".to_string(), AmfObject::String("status".to_string())),
+            (
+                "code".to_string(),
+                AmfObject::String("NetConnection.Connect.Success".to_string()),
+            ),
+            (
+                "description".to_string(),
+                AmfObject::String("Connection succeeded.".to_string()),
+            ),
+            ("objectEncoding".to_string(), AmfObject::Number(0.0)),
+        ]
+        .iter()
+        .cloned()
+        .collect();
         let buffer = encode_amf_messages(&[
             AmfObject::String("_result".to_string()),
             AmfObject::Number(1_f64),
@@ -233,16 +278,13 @@ impl RtmpServer {
     pub fn serve(&mut self) -> Result<()> {
         self.stream.handle_handshake()?;
         loop {
-            match self.stream.read_message()? {
-                None => {}
-                Some(message) => {
-                    eprintln!("message = {:?}", message);
-                    if message.message.len() != message.header.message_length {
-                        return Err(Error::InconsistentMessageLength);
-                    }
-                    if self.handle_message(message)? {
-                        return Ok(());
-                    }
+            if let Some(message) = self.stream.read_message()? {
+                eprintln!("message.header = {:?}", message.header);
+                if message.message.len() != message.header.message_length {
+                    return Err(Error::InconsistentMessageLength);
+                }
+                if self.handle_message(message)? {
+                    return Ok(());
                 }
             }
         }

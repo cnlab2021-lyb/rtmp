@@ -13,9 +13,9 @@ pub struct RtmpStream {
 }
 
 #[derive(Debug)]
-pub struct ChunkBasicHeader {
-    pub chunk_stream_id: u16,
-    pub chunk_type: u8,
+struct ChunkBasicHeader {
+    chunk_stream_id: u16,
+    chunk_type: u8,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -63,9 +63,9 @@ impl RtmpStream {
             CHUNK_MESSAGE_HEADER_SIZE[chunk_type as usize],
         )
         .map_err(Error::Io)?;
-        let mut message_header = match &self.prev_message_header {
+        let mut message_header = match self.prev_message_header {
             None => ChunkMessageHeader::default(),
-            Some(header) => header.clone(),
+            Some(ref header) => header.clone(),
         };
         if chunk_type < 2 {
             message_header.message_length = aggregate::<usize>(&buffer[3..6], false);
@@ -94,14 +94,15 @@ impl RtmpStream {
 
     pub fn read_message(&mut self) -> Result<Option<Message>> {
         let basic_header = self.read_chunk_basic_header().map_err(Error::Io)?;
+        eprintln!("basic_header = {:?}", basic_header);
         let message_header = self.read_chunk_message_header(basic_header.chunk_type)?;
-        let mut result = None;
-        match self.channels.get_mut(&basic_header.chunk_stream_id) {
+        eprintln!("message_header = {:?}", message_header);
+        let result = match self.channels.get_mut(&basic_header.chunk_stream_id) {
             None => {
                 let buffer_size = std::cmp::min(self.max_chunk_size, message_header.message_length);
                 let buffer = read_buffer(&mut self.stream, buffer_size).map_err(Error::Io)?;
                 if buffer_size == message_header.message_length {
-                    result = Some(Message {
+                    Some(Message {
                         header: message_header.clone(),
                         message: buffer,
                     })
@@ -113,6 +114,7 @@ impl RtmpStream {
                             message: buffer,
                         },
                     );
+                    None
                 }
             }
             Some(message) => {
@@ -125,10 +127,12 @@ impl RtmpStream {
                     &read_buffer(&mut self.stream, buffer_size).map_err(Error::Io)?,
                 );
                 if message.message.len() == message.header.message_length {
-                    result = self.channels.remove(&basic_header.chunk_stream_id);
+                    self.channels.remove(&basic_header.chunk_stream_id)
+                } else {
+                    None
                 }
             }
-        }
+        };
         self.prev_message_header = Some(message_header);
         Ok(result)
     }

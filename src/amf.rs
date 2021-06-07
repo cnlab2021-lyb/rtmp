@@ -53,7 +53,7 @@ fn decode_amf_object_property<T: AsRef<[u8]>>(
     }
     Ok(Some((
         String::from_utf8(read_buffer(reader, str_size as usize).map_err(Error::Io)?)
-            .expect("UTF-8 string"),
+            .expect("Invalid UTF-8 string"),
         decode_amf_message(reader)?,
     )))
 }
@@ -107,7 +107,7 @@ pub fn decode_amf_string<T: AsRef<[u8]>>(
     let size = read_u16(reader).map_err(Error::Io)?;
     Ok(
         String::from_utf8(read_buffer(reader, size as usize).map_err(Error::Io)?)
-            .expect("UTF-8 string"),
+            .expect("Invalid UTF-8 string"),
     )
 }
 
