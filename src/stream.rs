@@ -9,7 +9,8 @@ pub struct RtmpStream {
     channels: HashMap<u16, Message>,
     stream: TcpStream,
     prev_message_header: Option<ChunkMessageHeader>,
-    pub max_chunk_size: usize,
+    pub max_chunk_size_read: usize,
+    pub max_chunk_size_write: usize,
 }
 
 #[derive(Debug)]
@@ -38,7 +39,8 @@ impl RtmpStream {
             channels: HashMap::new(),
             stream,
             prev_message_header: None,
-            max_chunk_size: 128,
+            max_chunk_size_read: 128,
+            max_chunk_size_write: 128,
         }
     }
 
@@ -99,7 +101,8 @@ impl RtmpStream {
         eprintln!("message_header = {:?}", message_header);
         let result = match self.channels.get_mut(&basic_header.chunk_stream_id) {
             None => {
-                let buffer_size = std::cmp::min(self.max_chunk_size, message_header.message_length);
+                let buffer_size =
+                    std::cmp::min(self.max_chunk_size_read, message_header.message_length);
                 let buffer = read_buffer(&mut self.stream, buffer_size).map_err(Error::Io)?;
                 if buffer_size == message_header.message_length {
                     Some(Message {
@@ -120,7 +123,7 @@ impl RtmpStream {
             Some(message) => {
                 assert_eq!(basic_header.chunk_type, 3);
                 let buffer_size = std::cmp::min(
-                    self.max_chunk_size,
+                    self.max_chunk_size_read,
                     message.header.message_length - message.message.len(),
                 );
                 message.message.extend_from_slice(
@@ -221,7 +224,7 @@ impl RtmpStream {
     ) -> Result<()> {
         let mut ptr = 0;
         while ptr < message.len() {
-            let size = std::cmp::min(self.max_chunk_size, message.len() - ptr);
+            let size = std::cmp::min(self.max_chunk_size_write, message.len() - ptr);
             let chunk_type = if ptr == 0 { 0 } else { 3 };
             self.send_chunk_basic_header(ChunkBasicHeader {
                 chunk_stream_id,

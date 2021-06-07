@@ -245,9 +245,9 @@ impl RtmpServer {
         assert_eq!(message.header.message_length, 4);
         let mut buffer = [0x0; 4];
         buffer.copy_from_slice(&message.message);
-        self.stream.max_chunk_size = u32::from_be_bytes(buffer) as usize;
+        self.stream.max_chunk_size_read = u32::from_be_bytes(buffer) as usize;
         // The most-significant bit should not be set.
-        assert_eq!(self.stream.max_chunk_size >> 31, 0);
+        assert_eq!(self.stream.max_chunk_size_read >> 31, 0);
     }
 
     fn handle_message(&mut self, message: Message) -> Result<bool> {
