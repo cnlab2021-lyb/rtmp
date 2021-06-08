@@ -251,12 +251,12 @@ mod tests {
     fn amf_encode_object() {
         let object: HashMap<String, AmfObject> = [
             (
-                "field1".to_string(),
-                AmfObject::String("value1".to_string()),
+                String::from("field1"),
+                AmfObject::String(String::from("value1")),
             ),
-            ("field2".to_string(), AmfObject::Number(255.0_f64)),
-            ("field3".to_string(), AmfObject::Boolean(true)),
-            ("field4".to_string(), AmfObject::Null),
+            (String::from("field2"), AmfObject::Number(255.0_f64)),
+            (String::from("field3"), AmfObject::Boolean(true)),
+            (String::from("field4"), AmfObject::Null),
         ]
         .iter()
         .cloned()

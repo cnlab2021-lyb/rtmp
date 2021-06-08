@@ -74,32 +74,35 @@ impl RtmpServer {
         // TODO: Fill properties and Information.
         let properties: HashMap<String, AmfObject> = [
             (
-                "fmsVer".to_string(),
-                AmfObject::String("FMS/4,5,0,297".to_string()),
+                String::from("fmsVer"),
+                AmfObject::String(String::from("FMS/4,5,0,297")),
             ),
-            ("capabilities".to_string(), AmfObject::Number(255.0_f64)),
-            ("mode".to_string(), AmfObject::Number(1.0)),
+            (String::from("capabilities"), AmfObject::Number(255.0_f64)),
+            (String::from("mode"), AmfObject::Number(1.0)),
         ]
         .iter()
         .cloned()
         .collect();
         let information: HashMap<String, AmfObject> = [
-            ("level".to_string(), AmfObject::String("status".to_string())),
             (
-                "code".to_string(),
-                AmfObject::String("NetConnection.Connect.Success".to_string()),
+                String::from("level"),
+                AmfObject::String(String::from("status")),
             ),
             (
-                "description".to_string(),
-                AmfObject::String("Connection succeeded.".to_string()),
+                String::from("code"),
+                AmfObject::String(String::from("NetConnection.Connect.Success")),
             ),
-            ("objectEncoding".to_string(), AmfObject::Number(0.0)),
+            (
+                String::from("description"),
+                AmfObject::String(String::from("Connection succeeded.")),
+            ),
+            (String::from("objectEncoding"), AmfObject::Number(0.0)),
         ]
         .iter()
         .cloned()
         .collect();
         let buffer = encode_amf_messages(&[
-            AmfObject::String("_result".to_string()),
+            AmfObject::String(String::from("_result")),
             AmfObject::Number(1_f64),
             AmfObject::Object(properties),
             AmfObject::Object(information),
@@ -141,7 +144,7 @@ impl RtmpServer {
                     RTMP_NET_CONNECTION_STREAM_ID,
                     RTMP_COMMAND_MESSAGE_AMF0,
                     &encode_amf_messages(&[
-                        AmfObject::String("_result".to_string()),
+                        AmfObject::String(String::from("_result")),
                         AmfObject::Number(transaction_id),
                         AmfObject::Null,
                         AmfObject::Number(header.message_stream_id as f64),
@@ -155,14 +158,17 @@ impl RtmpServer {
 
     fn on_status(code: &str) -> Vec<u8> {
         let information: HashMap<String, AmfObject> = [
-            ("level".to_string(), AmfObject::String("status".to_string())),
-            ("code".to_string(), AmfObject::String(code.to_string())),
+            (
+                String::from("level"),
+                AmfObject::String(String::from("status")),
+            ),
+            (String::from("code"), AmfObject::String(code.to_string())),
         ]
         .iter()
         .cloned()
         .collect();
         encode_amf_messages(&[
-            AmfObject::String("onStatus".to_string()),
+            AmfObject::String(String::from("onStatus")),
             AmfObject::Number(0_f64),
             AmfObject::Null,
             AmfObject::Object(information),
