@@ -15,6 +15,7 @@ pub enum Error {
     NonStringCommand,
     UnexpectedAmfObjectType,
     UnknownDataMessage,
+    UnknownCommandMessage,
     InconsistentMessageLength,
 
     // AMF errors

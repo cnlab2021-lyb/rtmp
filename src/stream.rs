@@ -7,8 +7,8 @@ use super::utils::{aggregate, read_buffer, read_buffer_sized, read_numeric, read
 
 pub struct RtmpStream {
     channels: HashMap<u16, Message>,
+    prev_message_header: HashMap<u16, ChunkMessageHeader>,
     stream: TcpStream,
-    prev_message_header: Option<ChunkMessageHeader>,
     pub max_chunk_size_read: usize,
     pub max_chunk_size_write: usize,
 }
@@ -37,8 +37,8 @@ impl RtmpStream {
     pub fn new(stream: TcpStream) -> Self {
         RtmpStream {
             channels: HashMap::new(),
+            prev_message_header: HashMap::new(),
             stream,
-            prev_message_header: None,
             max_chunk_size_read: 128,
             max_chunk_size_write: 128,
         }
@@ -58,17 +58,24 @@ impl RtmpStream {
         })
     }
 
-    fn read_chunk_message_header(&mut self, chunk_type: u8) -> Result<ChunkMessageHeader> {
+    fn read_chunk_message_header(
+        &mut self,
+        basic_header: &ChunkBasicHeader,
+    ) -> Result<ChunkMessageHeader> {
         const CHUNK_MESSAGE_HEADER_SIZE: [usize; 4] = [11, 7, 3, 0];
+        let mut message_header = match self.prev_message_header.get(&basic_header.chunk_stream_id) {
+            None => ChunkMessageHeader::default(),
+            Some(h) => h.clone(),
+        };
+        let chunk_type = basic_header.chunk_type;
+        if chunk_type == 3 {
+            return Ok(message_header);
+        }
         let buffer = read_buffer(
             &mut self.stream,
             CHUNK_MESSAGE_HEADER_SIZE[chunk_type as usize],
         )
         .map_err(Error::Io)?;
-        let mut message_header = match self.prev_message_header {
-            None => ChunkMessageHeader::default(),
-            Some(ref header) => header.clone(),
-        };
         if chunk_type < 2 {
             message_header.message_length = aggregate::<usize>(&buffer[3..6], false);
             message_header.message_type_id = buffer[6];
@@ -97,7 +104,7 @@ impl RtmpStream {
     pub fn read_message(&mut self) -> Result<Option<Message>> {
         let basic_header = self.read_chunk_basic_header().map_err(Error::Io)?;
         eprintln!("basic_header = {:?}", basic_header);
-        let message_header = self.read_chunk_message_header(basic_header.chunk_type)?;
+        let message_header = self.read_chunk_message_header(&basic_header)?;
         eprintln!("message_header = {:?}", message_header);
         let result = match self.channels.get_mut(&basic_header.chunk_stream_id) {
             None => {
@@ -136,7 +143,8 @@ impl RtmpStream {
                 }
             }
         };
-        self.prev_message_header = Some(message_header);
+        self.prev_message_header
+            .insert(basic_header.chunk_stream_id, message_header);
         Ok(result)
     }
 

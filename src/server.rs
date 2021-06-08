@@ -225,7 +225,7 @@ impl RtmpServer {
                 "createStream" => self.handle_create_stream(reader, message.header)?,
                 "play" => self.handle_play(reader)?,
                 "publish" => self.handle_publish(reader)?,
-                _ => {}
+                _ => return Err(Error::UnknownCommandMessage),
             }
             Ok(cmd == "deleteStream")
         } else {
