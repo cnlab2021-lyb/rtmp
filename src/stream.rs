@@ -173,7 +173,7 @@ impl RtmpStream {
     }
 
     fn send_chunk_basic_header(&mut self, header: ChunkBasicHeader) -> Result<()> {
-        (if header.chunk_stream_id < 64 {
+        if header.chunk_stream_id < 64 {
             let byte = (header.chunk_stream_id as u8) | (header.chunk_type << 6);
             self.stream.write_all(&[byte])
         } else if header.chunk_stream_id < 320 {
@@ -187,7 +187,7 @@ impl RtmpStream {
                 ((header.chunk_stream_id - 64) >> 8) as u8,
                 ((header.chunk_stream_id - 64) & 255) as u8,
             ])
-        })
+        }
         .map_err(Error::Io)?;
         Ok(())
     }

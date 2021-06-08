@@ -213,6 +213,16 @@ impl RtmpServer {
         Ok(())
     }
 
+    #[allow(clippy::float_cmp)]
+    fn handle_get_stream_length(&mut self, mut reader: Cursor<Vec<u8>>) -> Result<()> {
+        let transaction_id = decode_amf_number(&mut reader, true)?;
+        assert_eq!(transaction_id, 3_f64);
+        let _ = decode_amf_null(&mut reader, true)?;
+        let stream_name = decode_amf_string(&mut reader, true)?;
+        eprintln!("get stream length: name = {}", stream_name);
+        Ok(())
+    }
+
     fn handle_command_message(&mut self, message: Message) -> Result<bool> {
         let mut reader = Cursor::new(message.message);
         if let AmfObject::String(cmd) = decode_amf_message(&mut reader)? {
@@ -223,7 +233,8 @@ impl RtmpServer {
                 "releaseStream" => self.handle_release_stream(reader)?,
                 "FCPublish" => self.handle_fc_publish(reader)?,
                 "createStream" => self.handle_create_stream(reader, message.header)?,
-                "play" => self.handle_play(reader)?,
+                "play" => self.handle_play(message.header, reader)?,
+                "getStreamLength" => self.handle_get_stream_length(reader)?,
                 "publish" => self.handle_publish(reader)?,
                 _ => return Err(Error::UnknownCommandMessage),
             }

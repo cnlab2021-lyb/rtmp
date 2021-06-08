@@ -37,6 +37,7 @@ impl fmt::Display for Error {
                 "Receive AMF command message starting with non-string object"
             ),
             Error::UnexpectedAmfObjectType => write!(f, "Receive unexpected AMF object type"),
+            Error::UnknownCommandMessage => write!(f, "Unknown AMF-0 command message"),
 
             Error::Amf3NotSupported => write!(f, "AMF-3 encoded messages are not supported"),
             Error::AmfIncorrectTypeMarker => write!(f, "Receive unexpected AMF type marker"),
