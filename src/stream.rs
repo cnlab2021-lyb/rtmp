@@ -33,6 +33,15 @@ pub struct Message {
     pub message: Vec<u8>,
 }
 
+impl Message {
+    fn new(header: ChunkMessageHeader) -> Self {
+        Message {
+            header,
+            message: Vec::new(),
+        }
+    }
+}
+
 impl RtmpStream {
     pub fn new(stream: TcpStream) -> Self {
         RtmpStream {
@@ -62,87 +71,64 @@ impl RtmpStream {
         &mut self,
         basic_header: &ChunkBasicHeader,
     ) -> Result<ChunkMessageHeader> {
-        const CHUNK_MESSAGE_HEADER_SIZE: [usize; 4] = [11, 7, 3, 0];
-        let mut message_header = match self.prev_message_header.get(&basic_header.chunk_stream_id) {
-            None => ChunkMessageHeader::default(),
-            Some(h) => h.clone(),
-        };
-        let chunk_type = basic_header.chunk_type;
-        if chunk_type == 3 {
+        let mut message_header =
+            if let Some(h) = self.prev_message_header.get(&basic_header.chunk_stream_id) {
+                h.clone()
+            } else {
+                ChunkMessageHeader::default()
+            };
+
+        if basic_header.chunk_type == 3 {
             return Ok(message_header);
         }
+        const CHUNK_MESSAGE_HEADER_SIZE: [usize; 4] = [11, 7, 3, 0];
         let buffer = read_buffer(
             &mut self.stream,
-            CHUNK_MESSAGE_HEADER_SIZE[chunk_type as usize],
+            CHUNK_MESSAGE_HEADER_SIZE[basic_header.chunk_type as usize],
         )
         .map_err(Error::Io)?;
-        if chunk_type < 2 {
+        if basic_header.chunk_type < 2 {
             message_header.message_length = aggregate::<usize>(&buffer[3..6], false);
             message_header.message_type_id = buffer[6];
         }
-        if chunk_type == 0 {
+        if basic_header.chunk_type == 0 {
             message_header.message_stream_id = aggregate::<u32>(&buffer[7..11], true);
         }
-        if chunk_type < 3 {
-            let timestamp = aggregate::<u32>(&buffer[0..3], false);
-            let timestamp = match timestamp {
-                0..=0xFFFFFE => timestamp,
-                0xFFFFFF => read_u32(&mut self.stream).map_err(Error::Io)?,
-                _ => {
-                    return Err(Error::InvalidTimestamp);
-                }
-            };
-            if chunk_type == 0 {
-                message_header.timestamp = timestamp;
-            } else {
-                message_header.timestamp += timestamp;
+        let timestamp = aggregate::<u32>(&buffer[0..3], false);
+        let timestamp = match timestamp {
+            0..=0xFFFFFE => timestamp,
+            0xFFFFFF => read_u32(&mut self.stream).map_err(Error::Io)?,
+            _ => {
+                return Err(Error::InvalidTimestamp);
             }
+        };
+        if basic_header.chunk_type == 0 {
+            message_header.timestamp = timestamp;
+        } else {
+            message_header.timestamp += timestamp;
         }
         Ok(message_header)
     }
 
     pub fn read_message(&mut self) -> Result<Option<Message>> {
         let basic_header = self.read_chunk_basic_header().map_err(Error::Io)?;
-        eprintln!("basic_header = {:?}", basic_header);
         let message_header = self.read_chunk_message_header(&basic_header)?;
-        eprintln!("message_header = {:?}", message_header);
-        let result = match self.channels.get_mut(&basic_header.chunk_stream_id) {
-            None => {
-                let buffer_size =
-                    std::cmp::min(self.max_chunk_size_read, message_header.message_length);
-                let buffer = read_buffer(&mut self.stream, buffer_size).map_err(Error::Io)?;
-                if buffer_size == message_header.message_length {
-                    Some(Message {
-                        header: message_header.clone(),
-                        message: buffer,
-                    })
-                } else {
-                    self.channels.insert(
-                        basic_header.chunk_stream_id,
-                        Message {
-                            header: message_header.clone(),
-                            message: buffer,
-                        },
-                    );
-                    None
-                }
-            }
-            Some(message) => {
-                assert_eq!(basic_header.chunk_type, 3);
-                let buffer_size = std::cmp::min(
-                    self.max_chunk_size_read,
-                    message.header.message_length - message.message.len(),
-                );
-                message.message.extend_from_slice(
-                    &read_buffer(&mut self.stream, buffer_size).map_err(Error::Io)?,
-                );
-                if message.message.len() == message.header.message_length {
-                    self.channels.remove(&basic_header.chunk_stream_id)
-                } else {
-                    None
-                }
-            }
+        let msg = self
+            .channels
+            .entry(basic_header.chunk_stream_id)
+            .or_insert_with(|| Message::new(message_header.clone()));
+        let buffer_size = std::cmp::min(
+            self.max_chunk_size_read,
+            msg.header.message_length - msg.message.len(),
+        );
+        msg.message
+            .extend_from_slice(&read_buffer(&mut self.stream, buffer_size).map_err(Error::Io)?);
+        let result = if msg.message.len() == msg.header.message_length {
+            self.channels.remove(&basic_header.chunk_stream_id)
+        } else {
+            None
         };
+
         self.prev_message_header
             .insert(basic_header.chunk_stream_id, message_header);
         Ok(result)
