@@ -10,6 +10,7 @@ pub enum Error {
     // RTMP chunk stream errors
     HandshakeCorrupted,
     InvalidTimestamp,
+    UnknownMessageTypeId(u8),
 
     // RTMP message stream errors
     NonStringCommand,
@@ -32,6 +33,7 @@ impl fmt::Display for Error {
                 write!(f, "RTMP handshake failed with incorrect random digest")
             }
             Error::InvalidTimestamp => write!(f, ""),
+            Error::UnknownMessageTypeId(ref id) => write!(f, "Unknown message type ID: {}", id),
             Error::NonStringCommand => write!(
                 f,
                 "Receive AMF command message starting with non-string object"

@@ -1,13 +1,26 @@
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::net::TcpStream;
+use std::sync::{Arc, Mutex};
 
 use super::amf::*;
 use super::error::{Error, Result};
 use super::stream::*;
+use super::utils::*;
+
+// FIXME: This is for experimental purposes only. For now we just send back all the data from the
+// publisher to the client without understanding the structure of the messages.
+#[derive(Default)]
+pub struct StreamData {
+    video: Vec<Message>,
+    _audio: Vec<Message>,
+    metadata: Option<Vec<(String, AmfObject)>>,
+}
 
 pub struct RtmpServer {
     stream: RtmpStream,
+    pool: Arc<Mutex<HashMap<String, (StreamData, Option<usize>)>>>,
+    stream_name: String,
 }
 
 const RTMP_SET_CHUNK_SIZE: u8 = 0x1;
@@ -45,23 +58,25 @@ impl RtmpServer {
                 RTMP_ACKNOWLEDGEMENT,
                 &7122_u32.to_be_bytes(),
             )?;
-            let mut buffer = Vec::from(1048576_u32.to_be_bytes());
+            // let mut buffer = Vec::from(1048576_u32.to_be_bytes());
             // Send acknowledgement.
             // Set window acknowledgement size.
-            self.stream.send_message(
-                RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
-                RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID,
-                RTMP_WINDOW_ACK_SIZE,
-                &buffer,
-            )?;
-            buffer.push(2);
+            // FIXME: Temporarily disabled so that the client is not affected by our choice of
+            // acknowledgement size.
+            // self.stream.send_message(
+            //     RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
+            //     RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID,
+            //     RTMP_WINDOW_ACK_SIZE,
+            //     &buffer,
+            // )?;
+            // buffer.push(2);
             // Set peer bandwidth.
-            self.stream.send_message(
-                RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
-                RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID,
-                RTMP_SET_PEER_BANDWIDTH,
-                &buffer,
-            )?;
+            // self.stream.send_message(
+            //     RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
+            //     RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID,
+            //     RTMP_SET_PEER_BANDWIDTH,
+            //     &buffer,
+            // )?;
             // Send user control message: StreamBegin.
             self.stream.send_message(
                 RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
@@ -123,13 +138,6 @@ impl RtmpServer {
         Ok(())
     }
 
-    fn handle_fc_publish(&self, mut reader: Cursor<Vec<u8>>) -> Result<()> {
-        let _ = decode_amf_number(&mut reader, true)?;
-        let _ = decode_amf_null(&mut reader, true)?;
-        let _ = decode_amf_string(&mut reader, true)?;
-        Ok(())
-    }
-
     fn handle_create_stream(
         &mut self,
         mut reader: Cursor<Vec<u8>>,
@@ -175,7 +183,11 @@ impl RtmpServer {
         ])
     }
 
-    fn handle_play(&mut self, mut reader: Cursor<Vec<u8>>) -> Result<()> {
+    fn handle_play(
+        &mut self,
+        header: ChunkMessageHeader,
+        mut reader: Cursor<Vec<u8>>,
+    ) -> Result<()> {
         let _transaction_id = decode_amf_number(&mut reader, true)?;
         // assert_eq!(transaction_id, 0_f64);
         let _cmd_object = decode_amf_null(&mut reader, true)?;
@@ -187,7 +199,83 @@ impl RtmpServer {
             "stream_name = {}, start = {:?}, duration = {:?}, reset = {:?}",
             stream_name, start, duration, reset
         );
-        todo!()
+        // Set chunk size.
+        self.stream.send_message(
+            RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
+            RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID,
+            RTMP_SET_CHUNK_SIZE,
+            &(0x7FFFFFFF_u32).to_be_bytes(),
+        )?;
+        self.stream.max_chunk_size_write = 0x7FFFFFFF;
+
+        // Send user control message: StreamBegin.
+        self.stream
+            .send_message(3, 0, RTMP_USER_CONTROL_MESSAGE, &[0x0; 6])?;
+
+        self.stream.send_message(
+            3,
+            RTMP_NET_CONNECTION_STREAM_ID,
+            RTMP_COMMAND_MESSAGE_AMF0,
+            &Self::on_status("NetStream.Play.Reset"),
+        )?;
+        self.stream.send_message(
+            3,
+            RTMP_NET_CONNECTION_STREAM_ID,
+            RTMP_COMMAND_MESSAGE_AMF0,
+            &Self::on_status("NetStream.Play.Start"),
+        )?;
+        // XXX: Unknown message
+        self.stream.send_message(
+            3,
+            RTMP_NET_CONNECTION_STREAM_ID,
+            RTMP_DATA_MESSAGE_AMF0,
+            &encode_amf_messages(&[
+                AmfObject::String(String::from("|RtmpSampleAccess")),
+                AmfObject::Boolean(true),
+                AmfObject::Boolean(true),
+            ]),
+        )?;
+        let mut ptr = 0;
+        let mut meta = false;
+        loop {
+            let mut guard = self.pool.lock().unwrap();
+            let pool = &mut *guard;
+            if let Some(data) = pool.get(&stream_name) {
+                if !meta {
+                    if let Some(ref m) = data.0.metadata {
+                        self.stream.send_message(
+                            3,
+                            header.message_stream_id,
+                            RTMP_DATA_MESSAGE_AMF0,
+                            &encode_amf_messages(&[
+                                AmfObject::String(String::from("onMetaData")),
+                                AmfObject::EcmaArray(m.clone()),
+                            ]),
+                        )?;
+                        meta = true;
+                    }
+                } else {
+                    let video = &data.0.video;
+                    if let Some(len) = data.1 {
+                        if ptr == len {
+                            break;
+                        }
+                    }
+                    if ptr < video.len() {
+                        self.stream.send_message(
+                            3,
+                            header.message_stream_id,
+                            RTMP_VIDEO_MESSAGE,
+                            &video[ptr].message,
+                        )?;
+                        ptr += 1;
+                    }
+                }
+            }
+            drop(guard);
+            std::thread::yield_now();
+        }
+        Ok(())
     }
 
     fn handle_publish(&mut self, mut reader: Cursor<Vec<u8>>) -> Result<()> {
@@ -200,6 +288,7 @@ impl RtmpServer {
             "publishing_name = {}, publishing_type = {}",
             publishing_name, publishing_type
         );
+        self.stream_name = publishing_name;
         self.stream.send_message(
             3,
             RTMP_NET_CONNECTION_STREAM_ID,
@@ -210,6 +299,11 @@ impl RtmpServer {
     }
 
     fn handle_delete_stream(&mut self, _reader: Cursor<Vec<u8>>) -> Result<()> {
+        // FIXME
+        let mut guard = self.pool.lock().unwrap();
+        let pool = &mut *guard;
+        pool.entry(self.stream_name.clone())
+            .and_modify(|v| v.1 = Some(v.0.video.len()));
         Ok(())
     }
 
@@ -231,11 +325,11 @@ impl RtmpServer {
                 "connect" => self.handle_connect(reader)?,
                 "deleteStream" => self.handle_delete_stream(reader)?,
                 "releaseStream" => self.handle_release_stream(reader)?,
-                "FCPublish" => self.handle_fc_publish(reader)?,
                 "createStream" => self.handle_create_stream(reader, message.header)?,
                 "play" => self.handle_play(message.header, reader)?,
                 "getStreamLength" => self.handle_get_stream_length(reader)?,
                 "publish" => self.handle_publish(reader)?,
+                "FCPublish" | "FCUnpublish" => {}
                 _ => return Err(Error::UnknownCommandMessage(cmd)),
             }
             Ok(cmd == "deleteStream")
@@ -246,15 +340,25 @@ impl RtmpServer {
 
     fn handle_data_message(&mut self, message: Message) -> Result<()> {
         eprintln!("Handle data message");
-        let mut reader = Cursor::new(message.message);
+        // FIXME: Remove clone().
+        let mut reader = Cursor::new(message.message.clone());
         if decode_amf_string(&mut reader, true)? != "@setDataFrame" {
             return Err(Error::UnknownDataMessage);
         }
         if decode_amf_string(&mut reader, true)? != "onMetaData" {
             return Err(Error::UnknownDataMessage);
         }
-        let prop = decode_amf_ecma_array(&mut reader, true)?;
-        eprintln!("{:?}", prop);
+        let properties = decode_amf_ecma_array(&mut reader, true)?;
+        eprintln!("{:?}", properties);
+
+        // FIXME
+        if let Ok(mut guard) = self.pool.lock() {
+            (*guard)
+                .entry(self.stream_name.clone())
+                .or_insert((StreamData::default(), None))
+                .0
+                .metadata = Some(properties);
+        }
         Ok(())
     }
 
@@ -265,6 +369,34 @@ impl RtmpServer {
         self.stream.max_chunk_size_read = u32::from_be_bytes(buffer) as usize;
         // The most-significant bit should not be set.
         assert_eq!(self.stream.max_chunk_size_read >> 31, 0);
+    }
+
+    fn handle_window_ack_size(&mut self, message: Message) {
+        assert_eq!(message.header.message_length, 4);
+        let mut buffer = [0x0; 4];
+        buffer.copy_from_slice(&message.message);
+        let window_ack_size = u32::from_be_bytes(buffer);
+        eprintln!("window ack size = {}", window_ack_size);
+    }
+
+    fn handle_user_control_message(&mut self, message: Message) -> Result<()> {
+        let mut cursor = Cursor::new(message.message);
+        let event_type = read_u16(&mut cursor).map_err(Error::Io)?;
+        eprintln!("event type = {}", event_type);
+        Ok(())
+    }
+
+    fn handle_video_message(&mut self, message: Message) -> Result<()> {
+        let (frame_type, codec_id) = ((message.message[0] >> 4) & 0xf, message.message[0] & 0xf);
+        eprintln!("frame_type = {}, codec_id = {}", frame_type, codec_id);
+        let mut guard = self.pool.lock().unwrap();
+        (*guard)
+            .entry(self.stream_name.clone())
+            .or_insert((StreamData::default(), None))
+            .0
+            .video
+            .push(message);
+        Ok(())
     }
 
     fn handle_message(&mut self, message: Message) -> Result<bool> {
@@ -285,9 +417,21 @@ impl RtmpServer {
             RTMP_SET_CHUNK_SIZE => {
                 self.handle_set_chunk_size(message);
             }
-            RTMP_AUDIO_MESSAGE => {}
-            RTMP_VIDEO_MESSAGE => {}
-            _ => {}
+            RTMP_WINDOW_ACK_SIZE => {
+                self.handle_window_ack_size(message);
+            }
+            RTMP_USER_CONTROL_MESSAGE => {
+                self.handle_user_control_message(message)?;
+            }
+            RTMP_AUDIO_MESSAGE => {
+                // todo!()
+            }
+            RTMP_VIDEO_MESSAGE => {
+                self.handle_video_message(message)?;
+            }
+            _ => {
+                return Err(Error::UnknownMessageTypeId(message.header.message_type_id));
+            }
         }
         Ok(false)
     }
@@ -307,9 +451,14 @@ impl RtmpServer {
         }
     }
 
-    pub fn new(stream: TcpStream) -> RtmpServer {
+    pub fn new(
+        stream: TcpStream,
+        pool: Arc<Mutex<HashMap<String, (StreamData, Option<usize>)>>>,
+    ) -> RtmpServer {
         RtmpServer {
             stream: RtmpStream::new(stream),
+            pool,
+            stream_name: String::new(),
         }
     }
 }
