@@ -197,6 +197,7 @@ fn encode_amf_message_impl(src: &AmfObject, message: &mut Vec<u8>) {
 mod tests {
     use super::*;
 
+    #[allow(clippy::float_cmp)]
     #[test]
     fn amf_parse_number() {
         let mut reader = Cursor::new([0x0; 9]);
@@ -237,6 +238,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::float_cmp)]
     #[test]
     fn amf_encode_number() {
         let buffer = encode_amf_messages(&[AmfObject::Number(7122.123_f64)]);
