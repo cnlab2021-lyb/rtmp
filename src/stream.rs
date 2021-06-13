@@ -464,4 +464,72 @@ mod test {
         assert_eq!(msg.header.timestamp, 7125);
         assert_eq!(msg.header.timestamp_delta, 1);
     }
+
+    #[test]
+    fn test_timestamp_type0_type3_type3() {
+        let mock = MockTcpStream {
+            cursor: io::Cursor::new(vec![]),
+            buffer: Vec::new(),
+        };
+        let mut stream = RtmpStream::new(mock);
+        send_message_header(
+            &mut stream,
+            ChunkMessageHeader {
+                timestamp: 7122,
+                message_length: 129,
+                message_type_id: 0,
+                message_stream_id: 0,
+                timestamp_delta: 0,
+            },
+            0,
+        );
+        stream.stream.write_all(&[0x0; 128]).unwrap();
+        send_message_header(
+            &mut stream,
+            ChunkMessageHeader {
+                timestamp: 0,
+                message_length: 0,
+                message_type_id: 0,
+                message_stream_id: 0,
+                timestamp_delta: 0,
+            },
+            3,
+        );
+        stream.stream.write_all(&[0x0; 1]).unwrap();
+        send_message_header(
+            &mut stream,
+            ChunkMessageHeader {
+                timestamp: 0,
+                message_length: 0,
+                message_type_id: 0,
+                message_stream_id: 0,
+                timestamp_delta: 0,
+            },
+            3,
+        );
+        stream.stream.write_all(&[0x0; 128]).unwrap();
+        send_message_header(
+            &mut stream,
+            ChunkMessageHeader {
+                timestamp: 0,
+                message_length: 0,
+                message_type_id: 0,
+                message_stream_id: 0,
+                timestamp_delta: 0,
+            },
+            3,
+        );
+        stream.stream.write_all(&[0x0; 129]).unwrap();
+        stream.stream.consume_buffer();
+        assert!(stream.read_message().unwrap().is_none());
+        let msg = stream.read_message().unwrap().unwrap();
+        assert_eq!(msg.header.timestamp, 7122);
+        assert_eq!(msg.header.message_length, 129);
+        assert_eq!(msg.message.len(), 129);
+        assert!(stream.read_message().unwrap().is_none());
+        let msg = stream.read_message().unwrap().unwrap();
+        assert_eq!(msg.header.timestamp, 7122 * 2);
+        assert_eq!(msg.header.message_length, 129);
+        assert_eq!(msg.message.len(), 129);
+    }
 }
