@@ -10,11 +10,11 @@ use super::stream::*;
 use super::utils::*;
 
 pub struct RtmpClient {
-    stream: Arc<Mutex<RtmpStream>>,
+    stream: Arc<Mutex<RtmpStream<TcpStream>>>,
 }
 
 pub struct RtmpServer {
-    stream: Arc<Mutex<RtmpStream>>,
+    stream: Arc<Mutex<RtmpStream<TcpStream>>>,
     clients: Arc<Mutex<HashMap<String, Vec<RtmpClient>>>>,
     stream_name: String,
 }
@@ -249,7 +249,7 @@ impl RtmpServer {
             .entry(stream_name)
             .or_insert_with(Vec::new)
             .push(RtmpClient {
-                stream: self.stream.clone(),
+                stream: Arc::clone(&self.stream),
             });
         eprintln!("start playing");
         Ok(())
@@ -278,11 +278,8 @@ impl RtmpServer {
     }
 
     fn handle_delete_stream(&mut self, _reader: Cursor<Vec<u8>>) -> Result<()> {
-        // FIXME
-        // let mut guard = self.pool.lock().unwrap();
-        // let pool = &mut *guard;
-        // pool.entry(self.stream_name.clone())
-        //     .and_modify(|v| v.1 = Some(v.0.video.len()));
+        let clients = &mut *self.clients.lock().unwrap();
+        clients.remove(&self.stream_name);
         Ok(())
     }
 
@@ -389,6 +386,7 @@ impl RtmpServer {
     fn handle_video_message(&mut self, message: Message) -> Result<()> {
         let (_frame_type, _codec_id) = ((message.message[0] >> 4) & 0xf, message.message[0] & 0xf);
         let guard = self.clients.lock().unwrap();
+        eprintln!("video timestamp = {}", message.header.timestamp);
         (*guard).get(&self.stream_name).map_or((), |clients| {
             clients.iter().for_each(|c| {
                 eprintln!("try acquiring lock");
@@ -410,6 +408,7 @@ impl RtmpServer {
 
     fn handle_audio_message(&mut self, message: Message) -> Result<()> {
         let guard = self.clients.lock().unwrap();
+        eprintln!("audio timestamp = {}", message.header.timestamp);
         (*guard).get(&self.stream_name).map_or((), |clients| {
             clients.iter().for_each(|c| {
                 eprintln!("try acquiring lock");

@@ -1,15 +1,26 @@
 use std::collections::HashMap;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
 use super::error::{Error, Result};
 use super::utils::{aggregate, read_buffer, read_buffer_sized, read_numeric, read_u32};
 
-pub struct RtmpStream {
+pub trait NetworkStream: Read + Write {
+    fn set_read_timeout(&self, duration: Option<Duration>) -> io::Result<()>;
+}
+
+impl NetworkStream for TcpStream {
+    #[inline]
+    fn set_read_timeout(&self, duration: Option<Duration>) -> io::Result<()> {
+        self.set_read_timeout(duration)
+    }
+}
+
+pub struct RtmpStream<S: NetworkStream> {
     channels: HashMap<u16, Message>,
-    prev_message_header: HashMap<u16, ChunkMessageHeader>,
-    stream: TcpStream,
+    prev_message_header: HashMap<u16, (ChunkMessageHeader, u8)>,
+    stream: S,
     pub max_chunk_size_read: usize,
     pub max_chunk_size_write: usize,
 }
@@ -26,6 +37,8 @@ pub struct ChunkMessageHeader {
     pub message_length: usize,
     pub message_type_id: u8,
     pub message_stream_id: u32,
+
+    timestamp_delta: u32,
 }
 
 #[derive(Debug)]
@@ -43,8 +56,8 @@ impl Message {
     }
 }
 
-impl RtmpStream {
-    pub fn new(stream: TcpStream) -> Self {
+impl<S: NetworkStream> RtmpStream<S> {
+    pub fn new(stream: S) -> Self {
         RtmpStream {
             channels: HashMap::new(),
             prev_message_header: HashMap::new(),
@@ -72,14 +85,19 @@ impl RtmpStream {
         &mut self,
         basic_header: &ChunkBasicHeader,
     ) -> Result<ChunkMessageHeader> {
-        let mut message_header =
+        let (mut message_header, prev_chunk_type) =
             if let Some(h) = self.prev_message_header.get(&basic_header.chunk_stream_id) {
                 h.clone()
             } else {
-                ChunkMessageHeader::default()
+                (ChunkMessageHeader::default(), 0)
             };
 
         if basic_header.chunk_type == 3 {
+            if prev_chunk_type == 0 {
+                message_header.timestamp_delta = message_header.timestamp;
+            }
+            message_header.timestamp =
+                (message_header.timestamp + message_header.timestamp_delta) % 0xFFFFFF;
             return Ok(message_header);
         }
         const CHUNK_MESSAGE_HEADER_SIZE: [usize; 4] = [11, 7, 3, 0];
@@ -95,18 +113,21 @@ impl RtmpStream {
         if basic_header.chunk_type == 0 {
             message_header.message_stream_id = aggregate::<u32>(&buffer[7..11], true);
         }
-        let timestamp = aggregate::<u32>(&buffer[0..3], false);
-        let timestamp = match timestamp {
-            0..=0xFFFFFE => timestamp,
+        let timestamp_or_delta = aggregate::<u32>(&buffer[0..3], false);
+        let timestamp_or_delta = match timestamp_or_delta {
+            0..=0xFFFFFE => timestamp_or_delta,
             0xFFFFFF => read_u32(&mut self.stream).map_err(Error::Io)?,
             _ => {
                 return Err(Error::InvalidTimestamp);
             }
         };
         if basic_header.chunk_type == 0 {
-            message_header.timestamp = timestamp;
+            message_header.timestamp = timestamp_or_delta;
+            message_header.timestamp_delta = 0;
         } else {
-            message_header.timestamp += timestamp;
+            message_header.timestamp_delta = timestamp_or_delta;
+            message_header.timestamp =
+                (message_header.timestamp + message_header.timestamp_delta) % 0xFFFFFF;
         }
         Ok(message_header)
     }
@@ -114,6 +135,11 @@ impl RtmpStream {
     pub fn read_message(&mut self) -> Result<Option<Message>> {
         let basic_header = self.read_chunk_basic_header().map_err(Error::Io)?;
         let message_header = self.read_chunk_message_header(&basic_header)?;
+        eprintln!(
+            "basic_header = {:?}, message_header = {:?}",
+            basic_header, message_header
+        );
+        let is_first_chunk = !self.channels.contains_key(&basic_header.chunk_stream_id);
         let msg = self
             .channels
             .entry(basic_header.chunk_stream_id)
@@ -130,8 +156,12 @@ impl RtmpStream {
             None
         };
 
-        self.prev_message_header
-            .insert(basic_header.chunk_stream_id, message_header);
+        if is_first_chunk {
+            self.prev_message_header.insert(
+                basic_header.chunk_stream_id,
+                (message_header, basic_header.chunk_type),
+            );
+        }
         Ok(result)
     }
 
@@ -184,16 +214,22 @@ impl RtmpStream {
         header: ChunkMessageHeader,
         chunk_type: u8,
     ) -> Result<()> {
+        if chunk_type == 3 {
+            return Ok(());
+        }
         // The maximum size of header is 11 bytes.
         let mut buffer = Vec::with_capacity(11);
-        if chunk_type < 3 {
-            let timestamp = if header.timestamp >= 0xFFFFFF {
-                0xFFFFFF
-            } else {
-                header.timestamp
-            };
-            buffer.extend_from_slice(&timestamp.to_be_bytes()[1..]);
-        }
+        let timestamp_or_delta = if chunk_type == 0 {
+            header.timestamp
+        } else {
+            header.timestamp_delta
+        };
+        let timestamp_or_delta_non_extended = if timestamp_or_delta >= 0xFFFFFF {
+            0xFFFFFF
+        } else {
+            timestamp_or_delta
+        };
+        buffer.extend_from_slice(&timestamp_or_delta_non_extended.to_be_bytes()[1..]);
         if chunk_type < 2 {
             buffer.extend_from_slice(
                 &header.message_length.to_be_bytes()[std::mem::size_of::<usize>() - 3..],
@@ -203,8 +239,8 @@ impl RtmpStream {
         if chunk_type == 0 {
             buffer.extend_from_slice(&header.message_stream_id.to_le_bytes());
         }
-        if chunk_type < 3 && header.timestamp >= 0xFFFFFF {
-            buffer.extend_from_slice(&header.timestamp.to_be_bytes());
+        if chunk_type < 3 && timestamp_or_delta >= 0xFFFFFF {
+            buffer.extend_from_slice(&timestamp_or_delta.to_be_bytes());
         }
         self.stream.write_all(&buffer).map_err(Error::Io)?;
         Ok(())
@@ -232,6 +268,7 @@ impl RtmpStream {
                     message_length: message.len(),
                     message_type_id,
                     message_stream_id,
+                    timestamp_delta: 0,
                 },
                 chunk_type,
             )?;
@@ -245,5 +282,186 @@ impl RtmpStream {
 
     pub fn set_read_timeout(&mut self, duration: Duration) {
         self.stream.set_read_timeout(Some(duration)).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    struct MockTcpStream {
+        cursor: io::Cursor<Vec<u8>>,
+        buffer: Vec<u8>,
+    }
+
+    impl Read for MockTcpStream {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.cursor.read(buf)
+        }
+    }
+
+    impl Write for MockTcpStream {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.buffer.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl NetworkStream for MockTcpStream {
+        fn set_read_timeout(&self, _: Option<Duration>) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl MockTcpStream {
+        fn consume_buffer(&mut self) {
+            self.cursor = io::Cursor::new(self.buffer.drain(..).collect());
+        }
+    }
+
+    #[test]
+    fn test_basic_header() {
+        let mock = MockTcpStream {
+            cursor: io::Cursor::new(vec![0x3]),
+            buffer: Vec::new(),
+        };
+        let mut stream = RtmpStream::new(mock);
+        let basic_header = stream.read_chunk_basic_header().unwrap();
+        assert_eq!(basic_header.chunk_type, 0);
+        assert_eq!(basic_header.chunk_stream_id, 3);
+    }
+
+    #[test]
+    fn test_basic_header_large() {
+        let mock = MockTcpStream {
+            cursor: io::Cursor::new(vec![0x0, 0x0]),
+            buffer: Vec::new(),
+        };
+        let mut stream = RtmpStream::new(mock);
+        let basic_header = stream.read_chunk_basic_header().unwrap();
+        assert_eq!(basic_header.chunk_type, 0);
+        assert_eq!(basic_header.chunk_stream_id, 64);
+    }
+
+    fn send_message_header(
+        stream: &mut RtmpStream<MockTcpStream>,
+        header: ChunkMessageHeader,
+        chunk_type: u8,
+    ) {
+        stream
+            .send_chunk_basic_header(ChunkBasicHeader {
+                chunk_stream_id: 3,
+                chunk_type,
+            })
+            .unwrap();
+        stream
+            .send_chunk_message_header(header, chunk_type)
+            .unwrap();
+    }
+
+    #[test]
+    fn test_timestamp_type0_type3() {
+        let mock = MockTcpStream {
+            cursor: io::Cursor::new(vec![]),
+            buffer: Vec::new(),
+        };
+        let mut stream = RtmpStream::new(mock);
+        send_message_header(
+            &mut stream,
+            ChunkMessageHeader {
+                timestamp: 7122,
+                message_length: 0,
+                message_type_id: 0,
+                message_stream_id: 0,
+                timestamp_delta: 0,
+            },
+            0,
+        );
+        send_message_header(
+            &mut stream,
+            ChunkMessageHeader {
+                timestamp: 0,
+                message_length: 0,
+                message_type_id: 0,
+                message_stream_id: 0,
+                timestamp_delta: 0,
+            },
+            3,
+        );
+        stream.stream.consume_buffer();
+        let msg = stream.read_message().unwrap().unwrap();
+        assert_eq!(msg.header.timestamp, 7122);
+        let msg = stream.read_message().unwrap().unwrap();
+        assert_eq!(msg.header.timestamp, 7122 * 2);
+    }
+
+    #[test]
+    fn test_timestamp_type0_type2_type3_type3() {
+        let mock = MockTcpStream {
+            cursor: io::Cursor::new(vec![]),
+            buffer: Vec::new(),
+        };
+        let mut stream = RtmpStream::new(mock);
+        send_message_header(
+            &mut stream,
+            ChunkMessageHeader {
+                timestamp: 7122,
+                message_length: 0,
+                message_type_id: 0,
+                message_stream_id: 0,
+                timestamp_delta: 0,
+            },
+            0,
+        );
+        send_message_header(
+            &mut stream,
+            ChunkMessageHeader {
+                timestamp: 0,
+                message_length: 0,
+                message_type_id: 0,
+                message_stream_id: 0,
+                timestamp_delta: 1,
+            },
+            2,
+        );
+        send_message_header(
+            &mut stream,
+            ChunkMessageHeader {
+                timestamp: 0,
+                message_length: 0,
+                message_type_id: 0,
+                message_stream_id: 0,
+                timestamp_delta: 0,
+            },
+            3,
+        );
+        send_message_header(
+            &mut stream,
+            ChunkMessageHeader {
+                timestamp: 0,
+                message_length: 0,
+                message_type_id: 0,
+                message_stream_id: 0,
+                timestamp_delta: 0,
+            },
+            3,
+        );
+        stream.stream.consume_buffer();
+        let msg = stream.read_message().unwrap().unwrap();
+        assert_eq!(msg.header.timestamp, 7122);
+        assert_eq!(msg.header.timestamp_delta, 0);
+        let msg = stream.read_message().unwrap().unwrap();
+        assert_eq!(msg.header.timestamp, 7123);
+        assert_eq!(msg.header.timestamp_delta, 1);
+        let msg = stream.read_message().unwrap().unwrap();
+        assert_eq!(msg.header.timestamp, 7124);
+        assert_eq!(msg.header.timestamp_delta, 1);
+        let msg = stream.read_message().unwrap().unwrap();
+        assert_eq!(msg.header.timestamp, 7125);
+        assert_eq!(msg.header.timestamp_delta, 1);
     }
 }
