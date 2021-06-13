@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::net::TcpStream;
+use std::time::Duration;
 
 use super::error::{Error, Result};
 use super::utils::{aggregate, read_buffer, read_buffer_sized, read_numeric, read_u32};
@@ -213,6 +214,7 @@ impl RtmpStream {
         &mut self,
         chunk_stream_id: u16,
         message_stream_id: u32,
+        timestamp: u32,
         message_type_id: u8,
         message: &[u8],
     ) -> Result<()> {
@@ -226,7 +228,7 @@ impl RtmpStream {
             })?;
             self.send_chunk_message_header(
                 ChunkMessageHeader {
-                    timestamp: 0,
+                    timestamp,
                     message_length: message.len(),
                     message_type_id,
                     message_stream_id,
@@ -239,5 +241,9 @@ impl RtmpStream {
             ptr += size;
         }
         Ok(())
+    }
+
+    pub fn set_read_timeout(&mut self, duration: Duration) {
+        self.stream.set_read_timeout(Some(duration)).unwrap();
     }
 }

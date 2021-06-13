@@ -10,7 +10,7 @@ mod stream;
 mod utils;
 
 use error::{Error, Result};
-use server::{RtmpServer, StreamData};
+use server::{RtmpClient, RtmpServer};
 
 fn main() -> Result<()> {
     let port = std::env::var("PORT")
@@ -20,15 +20,13 @@ fn main() -> Result<()> {
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).map_err(Error::Io)?;
     println!("Running RTMP server on port {}", port);
 
-    let pool = Arc::new(Mutex::new(
-        HashMap::<String, (StreamData, Option<usize>)>::new(),
-    ));
+    let clients = Arc::new(Mutex::new(HashMap::<String, Vec<RtmpClient>>::new()));
 
     for stream in listener.incoming() {
-        let p = Arc::clone(&pool);
+        let cli = Arc::clone(&clients);
         let stream = stream.map_err(Error::Io)?;
         thread::spawn(move || {
-            let mut server = RtmpServer::new(stream, p);
+            let mut server = RtmpServer::new(stream, cli);
             if let Err(e) = server.serve() {
                 eprintln!("Error: {}", e);
             }
