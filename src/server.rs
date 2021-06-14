@@ -48,44 +48,40 @@ impl RtmpServer {
         assert_eq!(transaction_id, 1_f64);
         let cmd_object = decode_amf_object(&mut reader, true)?;
         eprintln!("cmd_object = {:?}", cmd_object);
-        // TODO: Set window size, peer bandwidth.
-
         let stream = &mut *self.stream.lock().unwrap();
-        {
-            stream.send_message(
-                RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
-                RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID,
-                0,
-                RTMP_ACKNOWLEDGEMENT,
-                &7122_u32.to_be_bytes(),
-            )?;
-            let mut buffer = Vec::from(1048576_u32.to_be_bytes());
-            // Set window acknowledgement size.
-            stream.send_message(
-                RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
-                RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID,
-                0,
-                RTMP_WINDOW_ACK_SIZE,
-                &buffer,
-            )?;
-            buffer.push(2);
-            // Set peer bandwidth.
-            stream.send_message(
-                RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
-                RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID,
-                0,
-                RTMP_SET_PEER_BANDWIDTH,
-                &buffer,
-            )?;
-            // Send user control message: StreamBegin.
-            stream.send_message(
-                RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
-                RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID,
-                0,
-                RTMP_USER_CONTROL_MESSAGE,
-                &[0x0; 6],
-            )?;
-        }
+        stream.send_message(
+            RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
+            RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID,
+            0,
+            RTMP_ACKNOWLEDGEMENT,
+            &7122_u32.to_be_bytes(),
+        )?;
+        let mut buffer = Vec::from(1048576_u32.to_be_bytes());
+        // Set window acknowledgement size.
+        stream.send_message(
+            RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
+            RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID,
+            0,
+            RTMP_WINDOW_ACK_SIZE,
+            &buffer,
+        )?;
+        buffer.push(2);
+        // Set peer bandwidth.
+        stream.send_message(
+            RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
+            RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID,
+            0,
+            RTMP_SET_PEER_BANDWIDTH,
+            &buffer,
+        )?;
+        // Send user control message: StreamBegin.
+        stream.send_message(
+            RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
+            RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID,
+            0,
+            RTMP_USER_CONTROL_MESSAGE,
+            &[0x0; 6],
+        )?;
 
         // TODO: Fill properties and Information.
         let properties: HashMap<String, AmfObject> = [
@@ -192,7 +188,7 @@ impl RtmpServer {
         mut reader: Cursor<Vec<u8>>,
     ) -> Result<()> {
         let _transaction_id = decode_amf_number(&mut reader, true)?;
-        // assert_eq!(transaction_id, 0_f64);
+        // assert_eq!(_transaction_id, 0_f64);
         let _cmd_object = decode_amf_null(&mut reader, true)?;
         let stream_name = decode_amf_string(&mut reader, true)?;
         let start = decode_amf_message(&mut reader);
@@ -257,11 +253,11 @@ impl RtmpServer {
 
     fn handle_publish(&mut self, mut reader: Cursor<Vec<u8>>) -> Result<()> {
         let _transaction_id = decode_amf_number(&mut reader, true)?;
-        // assert_eq!(transaction_id, 0_f64);
+        // assert_eq!(_transaction_id, 0_f64);
         let _cmd_object = decode_amf_null(&mut reader, true)?;
         let publishing_name = decode_amf_string(&mut reader, true)?;
         let publishing_type = decode_amf_string(&mut reader, true)?;
-        eprintln!(
+        println!(
             "publishing_name = {}, publishing_type = {}",
             publishing_name, publishing_type
         );
@@ -323,25 +319,7 @@ impl RtmpServer {
         let properties = decode_amf_ecma_array(&mut reader, true)?;
         eprintln!("{:?}", properties);
 
-        self.clients
-            .lock()
-            .unwrap()
-            .get(&self.stream_name)
-            .map_or((), |clients| {
-                clients.iter().for_each(|c| {
-                    c.stream
-                        .lock()
-                        .unwrap()
-                        .send_message(
-                            3,
-                            message.header.message_stream_id,
-                            0,
-                            RTMP_DATA_MESSAGE_AMF0,
-                            &message.message,
-                        )
-                        .unwrap();
-                })
-            });
+        self.broadcast(0, RTMP_DATA_MESSAGE_AMF0, message);
         Ok(())
     }
 
@@ -379,50 +357,47 @@ impl RtmpServer {
         Ok(())
     }
 
-    fn handle_video_message(&mut self, message: Message) -> Result<()> {
-        let (_frame_type, _codec_id) = ((message.message[0] >> 4) & 0xf, message.message[0] & 0xf);
-        self.clients
-            .lock()
-            .unwrap()
-            .get(&self.stream_name)
-            .map_or((), |clients| {
-                clients.iter().for_each(|c| {
-                    c.stream
-                        .lock()
-                        .unwrap()
+    fn broadcast(&mut self, timestamp: u32, type_id: u8, message: Message) {
+        let clients = &mut *self.clients.lock().unwrap();
+        clients.get_mut(&self.stream_name).map_or((), |clients| {
+            let offline: Vec<_> = clients
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    let stream = &mut *c.stream.lock().unwrap();
+                    if stream
                         .send_message(
                             3,
                             message.header.message_stream_id,
-                            message.header.timestamp,
-                            RTMP_VIDEO_MESSAGE,
+                            timestamp,
+                            type_id,
                             &message.message,
                         )
-                        .unwrap();
+                        .is_err()
+                    {
+                        Some(i)
+                    } else {
+                        None
+                    }
                 })
+                .flatten()
+                .collect();
+
+            // Remove offline clients
+            offline.iter().for_each(|i| {
+                clients.remove(*i);
             });
+        })
+    }
+
+    fn handle_video_message(&mut self, message: Message) -> Result<()> {
+        let (_frame_type, _codec_id) = ((message.message[0] >> 4) & 0xf, message.message[0] & 0xf);
+        self.broadcast(message.header.timestamp, RTMP_VIDEO_MESSAGE, message);
         Ok(())
     }
 
     fn handle_audio_message(&mut self, message: Message) -> Result<()> {
-        self.clients
-            .lock()
-            .unwrap()
-            .get(&self.stream_name)
-            .map_or((), |clients| {
-                clients.iter().for_each(|c| {
-                    c.stream
-                        .lock()
-                        .unwrap()
-                        .send_message(
-                            3,
-                            message.header.message_stream_id,
-                            message.header.timestamp,
-                            RTMP_AUDIO_MESSAGE,
-                            &message.message,
-                        )
-                        .unwrap();
-                })
-            });
+        self.broadcast(message.header.timestamp, RTMP_AUDIO_MESSAGE, message);
         Ok(())
     }
 
