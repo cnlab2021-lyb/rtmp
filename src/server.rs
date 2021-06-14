@@ -149,8 +149,7 @@ impl RtmpServer {
         let cmd_object = decode_amf_message(&mut reader)?;
         match cmd_object {
             AmfObject::Object(_) | AmfObject::Null => {
-                let stream = &mut *self.stream.lock().unwrap();
-                stream.send_message(
+                self.stream.lock().unwrap().send_message(
                     3,
                     RTMP_NET_CONNECTION_STREAM_ID,
                     0,
@@ -244,8 +243,9 @@ impl RtmpServer {
             ]),
         )?;
         stream.set_read_timeout(Duration::from_micros(10));
-        let mut guard = self.clients.lock().unwrap();
-        (*guard)
+        self.clients
+            .lock()
+            .unwrap()
             .entry(stream_name)
             .or_insert_with(Vec::new)
             .push(RtmpClient {
@@ -266,8 +266,7 @@ impl RtmpServer {
             publishing_name, publishing_type
         );
         self.stream_name = publishing_name;
-        let stream = &mut *self.stream.lock().unwrap();
-        stream.send_message(
+        self.stream.lock().unwrap().send_message(
             3,
             RTMP_NET_CONNECTION_STREAM_ID,
             0,
@@ -278,8 +277,7 @@ impl RtmpServer {
     }
 
     fn handle_delete_stream(&mut self, _reader: Cursor<Vec<u8>>) -> Result<()> {
-        let clients = &mut *self.clients.lock().unwrap();
-        clients.remove(&self.stream_name);
+        self.clients.lock().unwrap().remove(&self.stream_name);
         Ok(())
     }
 
@@ -314,7 +312,6 @@ impl RtmpServer {
     }
 
     fn handle_data_message(&mut self, message: Message) -> Result<()> {
-        eprintln!("Handle data message");
         // FIXME: Remove clone().
         let mut reader = Cursor::new(&message.message);
         if decode_amf_string(&mut reader, true)? != "@setDataFrame" {
@@ -326,23 +323,25 @@ impl RtmpServer {
         let properties = decode_amf_ecma_array(&mut reader, true)?;
         eprintln!("{:?}", properties);
 
-        let guard = self.clients.lock().unwrap();
-        (*guard).get(&self.stream_name).map_or((), |clients| {
-            clients.iter().for_each(|c| {
-                eprintln!("try acquiring lock");
-                let stream = &mut *c.stream.lock().unwrap();
-                eprintln!("send metadata");
-                stream
-                    .send_message(
-                        3,
-                        message.header.message_stream_id,
-                        0,
-                        RTMP_DATA_MESSAGE_AMF0,
-                        &message.message,
-                    )
-                    .unwrap();
-            })
-        });
+        self.clients
+            .lock()
+            .unwrap()
+            .get(&self.stream_name)
+            .map_or((), |clients| {
+                clients.iter().for_each(|c| {
+                    c.stream
+                        .lock()
+                        .unwrap()
+                        .send_message(
+                            3,
+                            message.header.message_stream_id,
+                            0,
+                            RTMP_DATA_MESSAGE_AMF0,
+                            &message.message,
+                        )
+                        .unwrap();
+                })
+            });
         Ok(())
     }
 
@@ -350,10 +349,7 @@ impl RtmpServer {
         assert_eq!(message.header.message_length, 4);
         let mut buffer = [0x0; 4];
         buffer.copy_from_slice(&message.message);
-        let stream = &mut *self.stream.lock().unwrap();
-        stream.max_chunk_size_read = u32::from_be_bytes(buffer) as usize;
-        // The most-significant bit should not be set.
-        assert_eq!(stream.max_chunk_size_read >> 31, 0);
+        self.stream.lock().unwrap().max_chunk_size_read = u32::from_be_bytes(buffer) as usize;
     }
 
     fn handle_window_ack_size(&mut self, message: Message) {
@@ -385,46 +381,48 @@ impl RtmpServer {
 
     fn handle_video_message(&mut self, message: Message) -> Result<()> {
         let (_frame_type, _codec_id) = ((message.message[0] >> 4) & 0xf, message.message[0] & 0xf);
-        let guard = self.clients.lock().unwrap();
-        eprintln!("video timestamp = {}", message.header.timestamp);
-        (*guard).get(&self.stream_name).map_or((), |clients| {
-            clients.iter().for_each(|c| {
-                eprintln!("try acquiring lock");
-                let stream = &mut *c.stream.lock().unwrap();
-                eprintln!("send video messages");
-                stream
-                    .send_message(
-                        3,
-                        message.header.message_stream_id,
-                        message.header.timestamp,
-                        RTMP_VIDEO_MESSAGE,
-                        &message.message,
-                    )
-                    .unwrap();
-            })
-        });
+        self.clients
+            .lock()
+            .unwrap()
+            .get(&self.stream_name)
+            .map_or((), |clients| {
+                clients.iter().for_each(|c| {
+                    c.stream
+                        .lock()
+                        .unwrap()
+                        .send_message(
+                            3,
+                            message.header.message_stream_id,
+                            message.header.timestamp,
+                            RTMP_VIDEO_MESSAGE,
+                            &message.message,
+                        )
+                        .unwrap();
+                })
+            });
         Ok(())
     }
 
     fn handle_audio_message(&mut self, message: Message) -> Result<()> {
-        let guard = self.clients.lock().unwrap();
-        eprintln!("audio timestamp = {}", message.header.timestamp);
-        (*guard).get(&self.stream_name).map_or((), |clients| {
-            clients.iter().for_each(|c| {
-                eprintln!("try acquiring lock");
-                let stream = &mut *c.stream.lock().unwrap();
-                eprintln!("send audio messages");
-                stream
-                    .send_message(
-                        3,
-                        message.header.message_stream_id,
-                        message.header.timestamp,
-                        RTMP_AUDIO_MESSAGE,
-                        &message.message,
-                    )
-                    .unwrap();
-            })
-        });
+        self.clients
+            .lock()
+            .unwrap()
+            .get(&self.stream_name)
+            .map_or((), |clients| {
+                clients.iter().for_each(|c| {
+                    c.stream
+                        .lock()
+                        .unwrap()
+                        .send_message(
+                            3,
+                            message.header.message_stream_id,
+                            message.header.timestamp,
+                            RTMP_AUDIO_MESSAGE,
+                            &message.message,
+                        )
+                        .unwrap();
+                })
+            });
         Ok(())
     }
 
@@ -470,15 +468,9 @@ impl RtmpServer {
     }
 
     pub fn serve(&mut self) -> Result<()> {
-        {
-            let stream = &mut *(self.stream.lock().unwrap());
-            stream.handle_handshake()?;
-        }
+        self.stream.lock().unwrap().handle_handshake()?;
         loop {
-            let message = {
-                let stream = &mut *(self.stream.lock().unwrap());
-                stream.read_message()
-            };
+            let message = self.stream.lock().unwrap().read_message();
             match message {
                 Err(e) => {
                     if let Error::Io(ref io) = e {
