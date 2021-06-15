@@ -7,14 +7,14 @@ const NUMBER_MARKER: u8 = 0x0;
 const BOOLEAN_MARKER: u8 = 0x1;
 const STRING_MARKER: u8 = 0x2;
 const OBJECT_MARKER: u8 = 0x3;
-// const MOVIECLIP_MARKER: u8 = 0x4;
+const MOVIECLIP_MARKER: u8 = 0x4;
 const NULL_MARKER: u8 = 0x5;
-// const UNDEFINED_MARKER: u8 = 0x6;
-// const REFERENCE_MARKER: u8 = 0x7;
+const UNDEFINED_MARKER: u8 = 0x6;
+const REFERENCE_MARKER: u8 = 0x7;
 const ECMA_ARRAY_MARKER: u8 = 0x8;
 const OBJECT_END_MARKER: u8 = 0x9;
-// const STRICT_ARRAY_MARKER: u8 = 0xA;
-// const DATE_MARKER: u8 = 0xB;
+const STRICT_ARRAY_MARKER: u8 = 0xA;
+const DATE_MARKER: u8 = 0xB;
 // const LONG_STRING_MARKER: u8 = 0xC;
 // const UNSUPPORTED_MARKER: u8 = 0xD;
 // const RECORDSET_MARKER: u8 = 0xE;
@@ -29,8 +29,10 @@ pub enum AmfObject {
     Object(HashMap<String, AmfObject>),
     EcmaArray(Vec<(String, AmfObject)>),
     Null,
-    // Undefined,
-    // Reference(u16),
+    Undefined,
+    Reference(u16),
+    StrictArray(Vec<AmfObject>),
+    Date((f64, i16)),
 }
 
 fn verify_type_marker<T: AsRef<[u8]>>(
@@ -141,15 +143,58 @@ pub fn decode_amf_ecma_array<T: AsRef<[u8]>>(
     Ok(result)
 }
 
+pub fn decode_amf_reference<T: AsRef<[u8]>>(
+    reader: &mut Cursor<T>,
+    verify_marker: bool,
+) -> Result<u16> {
+    if verify_marker {
+        verify_type_marker(reader, REFERENCE_MARKER)?;
+    }
+    read_u16(reader).map_err(Error::Io)
+}
+
+pub fn decode_amf_strict_array<T: AsRef<[u8]>>(
+    reader: &mut Cursor<T>,
+    verify_marker: bool,
+) -> Result<Vec<AmfObject>> {
+    if verify_marker {
+        verify_type_marker(reader, STRICT_ARRAY_MARKER)?;
+    }
+    (0..read_u32(reader).map_err(Error::Io)?)
+        .map(|_| decode_amf_message(reader))
+        .collect::<Result<Vec<_>>>()
+}
+
+pub fn decode_amf_date<T: AsRef<[u8]>>(
+    reader: &mut Cursor<T>,
+    verify_marker: bool,
+) -> Result<(f64, i16)> {
+    if verify_marker {
+        verify_type_marker(reader, DATE_MARKER)?;
+    }
+    Ok((
+        read_f64(reader).map_err(Error::Io)?,
+        read_i16(reader).map_err(Error::Io)?,
+    ))
+}
+
 pub fn decode_amf_message<T: AsRef<[u8]>>(reader: &mut Cursor<T>) -> Result<AmfObject> {
     let type_marker = read_u8(reader).map_err(Error::Io)?;
     match type_marker {
         NUMBER_MARKER => Ok(AmfObject::Number(decode_amf_number(reader, false)?)),
         BOOLEAN_MARKER => Ok(AmfObject::Boolean(decode_amf_boolean(reader, false)?)),
         STRING_MARKER => Ok(AmfObject::String(decode_amf_string(reader, false)?)),
+        MOVIECLIP_MARKER => unreachable!("Movie clip marker is reserved"),
         OBJECT_MARKER => Ok(AmfObject::Object(decode_amf_object(reader, false)?)),
         NULL_MARKER => Ok(AmfObject::Null),
+        UNDEFINED_MARKER => Ok(AmfObject::Undefined),
+        REFERENCE_MARKER => Ok(AmfObject::Reference(decode_amf_reference(reader, false)?)),
         ECMA_ARRAY_MARKER => Ok(AmfObject::EcmaArray(decode_amf_ecma_array(reader, false)?)),
+        OBJECT_END_MARKER => unreachable!("Object end marker should not appear on its own"),
+        STRICT_ARRAY_MARKER => Ok(AmfObject::StrictArray(decode_amf_strict_array(
+            reader, false,
+        )?)),
+        DATE_MARKER => Ok(AmfObject::Date(decode_amf_date(reader, false)?)),
         _ => Err(Error::AmfIncorrectTypeMarker),
     }
 }

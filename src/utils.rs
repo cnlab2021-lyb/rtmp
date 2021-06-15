@@ -17,6 +17,10 @@ pub fn read_f64<R: Read>(reader: &mut R) -> io::Result<f64> {
     Ok(f64::from_be_bytes(read_buffer_sized::<_, 8>(reader)?))
 }
 
+pub fn read_i16<R: Read>(reader: &mut R) -> io::Result<i16> {
+    Ok(i16::from_be_bytes(read_buffer_sized::<_, 2>(reader)?))
+}
+
 pub fn read_numeric<T, R: Read>(reader: &mut R, nbytes: usize) -> io::Result<T>
 where
     T: From<u8> + std::ops::Shl<u8, Output = T> + std::ops::BitOr<Output = T>,
