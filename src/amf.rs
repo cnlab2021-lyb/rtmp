@@ -232,7 +232,7 @@ mod tests {
     fn amf_parse_string() {
         let mut reader = Cursor::new([0x2, 0x00, 0x4, 0x6A, 0x69, 0x7A, 0x7A]);
         if let Ok(AmfObject::String(x)) = decode_amf_message(&mut reader) {
-            assert_eq!(x, "jizzz");
+            assert_eq!(x, "jizz");
         } else {
             panic!("Test failed");
         }
