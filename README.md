@@ -1,6 +1,6 @@
 # Real-Time Messaging Protocol
 
-[![Build Status](https://travis-ci.org/github/cnlab2021-lyb/rtmp.svg?branch=master)](https://travis-ci.org/github/cnlab2021-lyb/rtmp)
+![Build status](https://github.com/cnlab2021-lyb/rtmp/actions/workflows/main.yml/badge.svg)
 
 Use
 
