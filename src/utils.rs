@@ -87,4 +87,11 @@ mod tests {
         let mut cursor = Cursor::new([0x0, 0x1, 0x2, 0x3]);
         assert_eq!(read_u32(&mut cursor).unwrap(), 0x00010203_u32);
     }
+
+    #[allow(clippy::float_cmp)]
+    #[test]
+    fn test_read_f64() {
+        let mut cursor = Cursor::new(71.22_f64.to_be_bytes());
+        assert_eq!(read_f64(&mut cursor).unwrap(), 71.22_f64);
+    }
 }
