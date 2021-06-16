@@ -267,6 +267,7 @@ fn encode_amf_message_impl(src: &AmfObject, message: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
 
     #[allow(clippy::float_cmp)]
     #[test]
@@ -274,7 +275,7 @@ mod tests {
         let mut reader = Cursor::new([NUMBER_MARKER; 9]);
         if let AmfObject::Number(x) = decode_amf_message(&mut reader).unwrap() {
             assert_eq!(x, 0_f64);
-            assert_eq!(reader.position(), 9);
+            assert!(reader.bytes().next().is_none());
         } else {
             panic!("Test failed");
         }
@@ -285,7 +286,7 @@ mod tests {
         let mut reader = Cursor::new([BOOLEAN_MARKER, 0x0]);
         if let AmfObject::Boolean(x) = decode_amf_message(&mut reader).unwrap() {
             assert_eq!(x, false);
-            assert_eq!(reader.position(), 2);
+            assert!(reader.bytes().next().is_none());
         } else {
             panic!("Test failed");
         }
@@ -296,7 +297,7 @@ mod tests {
         let mut reader = Cursor::new([BOOLEAN_MARKER, 0xA]);
         if let AmfObject::Boolean(x) = decode_amf_message(&mut reader).unwrap() {
             assert_eq!(x, true);
-            assert_eq!(reader.position(), 2);
+            assert!(reader.bytes().next().is_none());
         } else {
             panic!("Test failed");
         }
@@ -307,7 +308,62 @@ mod tests {
         let mut reader = Cursor::new([STRING_MARKER, 0x00, 0x4, 0x6A, 0x69, 0x7A, 0x7A]);
         if let AmfObject::String(x) = decode_amf_message(&mut reader).unwrap() {
             assert_eq!(x, "jizz");
-            assert_eq!(reader.position(), 7);
+            assert!(reader.bytes().next().is_none());
+        } else {
+            panic!("Test failed");
+        }
+    }
+
+    #[test]
+    fn amf_parse_null_undefined() {
+        let mut reader = Cursor::new([NULL_MARKER, UNDEFINED_MARKER]);
+        if let AmfObject::Null = decode_amf_message(&mut reader).unwrap() {
+            if let AmfObject::Undefined = decode_amf_message(&mut reader).unwrap() {
+                // Test passed
+                assert!(reader.bytes().next().is_none());
+                return;
+            }
+        }
+        panic!("Test failed");
+    }
+
+    #[test]
+    fn amf_parse_ecma_array() {
+        let mut reader = Cursor::new([
+            ECMA_ARRAY_MARKER,
+            0x0,
+            0x0,
+            0x0,
+            0x2,
+            0x0,
+            0x2,
+            0x68,
+            0x69,
+            BOOLEAN_MARKER,
+            0x13,
+            0x0,
+            0x3,
+            0x79,
+            0x6f,
+            0x75,
+            NUMBER_MARKER,
+            0x0,
+            0x0,
+            0x0,
+            0x0,
+            0x0,
+            0x0,
+            0x0,
+            0x0,
+            0x0,
+            0x0,
+            OBJECT_END_MARKER,
+        ]);
+        if let AmfObject::EcmaArray(v) = decode_amf_message(&mut reader).unwrap() {
+            assert_eq!(v.len(), 2);
+            assert_eq!(v[0], (String::from("hi"), AmfObject::Boolean(true)));
+            assert_eq!(v[1], (String::from("you"), AmfObject::Number(0_f64)));
+            assert!(reader.bytes().next().is_none());
         } else {
             panic!("Test failed");
         }
