@@ -5,7 +5,7 @@
 Use
 
 ```sh
-[PORT=<port> cargo run]
+[PORT=<port>] cargo run [--release]
 ```
 
 to run the RTMP server (the default port number is 7122).
