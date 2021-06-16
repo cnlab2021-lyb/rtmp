@@ -23,14 +23,14 @@ const DATE_MARKER: u8 = 0xB;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AmfObject {
-    String(String),
     Number(f64),
     Boolean(bool),
+    String(String),
     Object(HashMap<String, AmfObject>),
-    EcmaArray(Vec<(String, AmfObject)>),
     Null,
     Undefined,
     Reference(u16),
+    EcmaArray(Vec<(String, AmfObject)>),
     StrictArray(Vec<AmfObject>),
     Date((f64, i16)),
 }
@@ -208,11 +208,6 @@ pub fn encode_amf_messages(src: &[AmfObject]) -> Vec<u8> {
 
 fn encode_amf_message_impl(src: &AmfObject, message: &mut Vec<u8>) {
     match *src {
-        AmfObject::String(ref s) => {
-            message.push(STRING_MARKER);
-            message.extend_from_slice(&(s.len() as u16).to_be_bytes());
-            message.extend_from_slice(s.as_bytes());
-        }
         AmfObject::Number(ref x) => {
             message.push(NUMBER_MARKER);
             message.extend_from_slice(&x.to_be_bytes());
@@ -222,19 +217,50 @@ fn encode_amf_message_impl(src: &AmfObject, message: &mut Vec<u8>) {
             let byte = if *b { 1 } else { 0 };
             message.push(byte);
         }
+        AmfObject::String(ref s) => {
+            message.push(STRING_MARKER);
+            message.extend_from_slice(&(s.len() as u16).to_be_bytes());
+            message.extend_from_slice(s.as_bytes());
+        }
         AmfObject::Object(ref obj) => {
             message.push(OBJECT_MARKER);
-            for (key, val) in obj.iter() {
+            obj.iter().for_each(|(key, val)| {
                 message.extend_from_slice(&(key.len() as u16).to_be_bytes());
                 message.extend_from_slice(key.as_bytes());
                 encode_amf_message_impl(val, message);
-            }
+            });
             message.extend_from_slice(&[0x0, 0x0, OBJECT_END_MARKER]);
         }
         AmfObject::Null => {
             message.push(NULL_MARKER);
         }
-        _ => {}
+        AmfObject::Undefined => {
+            message.push(UNDEFINED_MARKER);
+        }
+        AmfObject::Reference(ref r) => {
+            message.push(REFERENCE_MARKER);
+            message.extend_from_slice(&r.to_be_bytes());
+        }
+        AmfObject::EcmaArray(ref v) => {
+            message.push(ECMA_ARRAY_MARKER);
+            message.extend_from_slice(&(v.len() as u32).to_be_bytes());
+            v.iter().for_each(|(key, val)| {
+                message.extend_from_slice(&(key.len() as u16).to_be_bytes());
+                message.extend_from_slice(key.as_bytes());
+                encode_amf_message_impl(val, message);
+            });
+            message.extend_from_slice(&[0x0, 0x0, OBJECT_END_MARKER]);
+        }
+        AmfObject::StrictArray(ref v) => {
+            message.push(STRICT_ARRAY_MARKER);
+            message.extend_from_slice(&(v.len() as u32).to_be_bytes());
+            v.iter().for_each(|t| encode_amf_message_impl(t, message));
+        }
+        AmfObject::Date((ref d, ref t)) => {
+            message.push(DATE_MARKER);
+            message.extend_from_slice(&d.to_be_bytes());
+            message.extend_from_slice(&t.to_be_bytes());
+        }
     }
 }
 
@@ -315,6 +341,26 @@ mod tests {
                 let key = format!("field{}", i);
                 assert_eq!(object.get(&key), amf.get(&key));
             }
+        } else {
+            panic!("Test failed");
+        }
+    }
+
+    #[test]
+    fn amf_encode_ecma_array() {
+        let array = vec![
+            (
+                String::from("key1"),
+                AmfObject::String(String::from("val1")),
+            ),
+            (String::from("key2"), AmfObject::Boolean(true)),
+            (String::from("key3"), AmfObject::Number(71.22_f64)),
+            (String::from("key4"), AmfObject::Null),
+        ];
+        let buffer = encode_amf_messages(&[AmfObject::EcmaArray(array.clone())]);
+        if let Ok(AmfObject::EcmaArray(v)) = decode_amf_message(&mut Cursor::new(buffer)) {
+            eprintln!("array = {:?}, v = {:?}", array, v);
+            assert_eq!(array, v);
         } else {
             panic!("Test failed");
         }
