@@ -271,9 +271,10 @@ mod tests {
     #[allow(clippy::float_cmp)]
     #[test]
     fn amf_parse_number() {
-        let mut reader = Cursor::new([0x0; 9]);
-        if let Ok(AmfObject::Number(x)) = decode_amf_message(&mut reader) {
+        let mut reader = Cursor::new([NUMBER_MARKER; 9]);
+        if let AmfObject::Number(x) = decode_amf_message(&mut reader).unwrap() {
             assert_eq!(x, 0_f64);
+            assert_eq!(reader.position(), 9);
         } else {
             panic!("Test failed");
         }
@@ -281,9 +282,10 @@ mod tests {
 
     #[test]
     fn amf_parse_bool_false() {
-        let mut reader = Cursor::new([0x1, 0x0]);
-        if let Ok(AmfObject::Boolean(x)) = decode_amf_message(&mut reader) {
+        let mut reader = Cursor::new([BOOLEAN_MARKER, 0x0]);
+        if let AmfObject::Boolean(x) = decode_amf_message(&mut reader).unwrap() {
             assert_eq!(x, false);
+            assert_eq!(reader.position(), 2);
         } else {
             panic!("Test failed");
         }
@@ -291,9 +293,10 @@ mod tests {
 
     #[test]
     fn amf_parse_bool_true() {
-        let mut reader = Cursor::new([0x1, 0xA]);
-        if let Ok(AmfObject::Boolean(x)) = decode_amf_message(&mut reader) {
+        let mut reader = Cursor::new([BOOLEAN_MARKER, 0xA]);
+        if let AmfObject::Boolean(x) = decode_amf_message(&mut reader).unwrap() {
             assert_eq!(x, true);
+            assert_eq!(reader.position(), 2);
         } else {
             panic!("Test failed");
         }
@@ -301,9 +304,10 @@ mod tests {
 
     #[test]
     fn amf_parse_string() {
-        let mut reader = Cursor::new([0x2, 0x00, 0x4, 0x6A, 0x69, 0x7A, 0x7A]);
-        if let Ok(AmfObject::String(x)) = decode_amf_message(&mut reader) {
+        let mut reader = Cursor::new([STRING_MARKER, 0x00, 0x4, 0x6A, 0x69, 0x7A, 0x7A]);
+        if let AmfObject::String(x) = decode_amf_message(&mut reader).unwrap() {
             assert_eq!(x, "jizz");
+            assert_eq!(reader.position(), 7);
         } else {
             panic!("Test failed");
         }
@@ -313,7 +317,7 @@ mod tests {
     #[test]
     fn amf_encode_number() {
         let buffer = encode_amf_messages(&[AmfObject::Number(7122.123_f64)]);
-        if let Ok(AmfObject::Number(x)) = decode_amf_message(&mut Cursor::new(buffer)) {
+        if let AmfObject::Number(x) = decode_amf_message(&mut Cursor::new(buffer)).unwrap() {
             assert_eq!(x, 7122.123_f64);
         } else {
             panic!("Test failed");
@@ -335,7 +339,7 @@ mod tests {
         .cloned()
         .collect();
         let buffer = encode_amf_messages(&[AmfObject::Object(object.clone())]);
-        if let Ok(AmfObject::Object(amf)) = decode_amf_message(&mut Cursor::new(buffer)) {
+        if let AmfObject::Object(amf) = decode_amf_message(&mut Cursor::new(buffer)).unwrap() {
             assert_eq!(amf.len(), object.len());
             for i in 1..5 {
                 let key = format!("field{}", i);
@@ -358,7 +362,7 @@ mod tests {
             (String::from("key4"), AmfObject::Null),
         ];
         let buffer = encode_amf_messages(&[AmfObject::EcmaArray(array.clone())]);
-        if let Ok(AmfObject::EcmaArray(v)) = decode_amf_message(&mut Cursor::new(buffer)) {
+        if let AmfObject::EcmaArray(v) = decode_amf_message(&mut Cursor::new(buffer)).unwrap() {
             eprintln!("array = {:?}, v = {:?}", array, v);
             assert_eq!(array, v);
         } else {
