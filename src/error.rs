@@ -18,6 +18,7 @@ pub enum Error {
     UnknownDataMessage,
     UnknownCommandMessage(String),
     InconsistentMessageLength,
+    MissingMediaStream,
 
     // AMF errors
     Amf3NotSupported,

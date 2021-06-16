@@ -1,21 +1,39 @@
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::net::TcpStream;
+use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::amf::*;
-use super::error::{Error, Result};
-use super::stream::*;
-use super::utils::*;
+use crate::amf::*;
+use crate::error::{Error, Result};
+use crate::stream::{ChunkMessageHeader, Message, RtmpMessageStream};
+use crate::utils::*;
 
-pub struct RtmpClient {
-    stream: Arc<Mutex<RtmpStream<TcpStream>>>,
+#[derive(Default, Debug)]
+pub struct RtmpMediaStream {
+    clients: Vec<Arc<Mutex<RtmpMessageStream<TcpStream>>>>,
+    metadata: Option<Message>,
+    published: bool,
+}
+
+impl Deref for RtmpMediaStream {
+    type Target = Vec<Arc<Mutex<RtmpMessageStream<TcpStream>>>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.clients
+    }
+}
+
+impl DerefMut for RtmpMediaStream {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.clients
+    }
 }
 
 pub struct RtmpServer {
-    stream: Arc<Mutex<RtmpStream<TcpStream>>>,
-    clients: Arc<Mutex<HashMap<String, Vec<RtmpClient>>>>,
+    message_stream: Arc<Mutex<RtmpMessageStream<TcpStream>>>,
+    media_streams: Arc<Mutex<HashMap<String, RtmpMediaStream>>>,
     stream_name: String,
 }
 
@@ -41,6 +59,39 @@ const RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID: u16 = 0x2;
 // User control message events
 const RTMP_USER_CONTROL_SET_BUFFER_LENGTH: u16 = 0x3;
 
+impl RtmpMediaStream {
+    fn broadcast(&mut self, timestamp: u32, type_id: u8, message: &Message) {
+        let offline: Vec<_> = self
+            .clients
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let stream = &mut *s.lock().unwrap();
+                if stream
+                    .send_message(
+                        3,
+                        message.header.message_stream_id,
+                        timestamp,
+                        type_id,
+                        &message.message,
+                    )
+                    .is_err()
+                {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .flatten()
+            .collect();
+
+        // Remove offline clients
+        offline.iter().for_each(|i| {
+            self.clients.remove(*i);
+        });
+    }
+}
+
 impl RtmpServer {
     #[allow(clippy::float_cmp)]
     fn handle_connect(&mut self, mut reader: Cursor<Vec<u8>>) -> Result<()> {
@@ -48,7 +99,7 @@ impl RtmpServer {
         assert_eq!(transaction_id, 1_f64);
         let cmd_object = decode_amf_object(&mut reader, true)?;
         eprintln!("cmd_object = {:?}", cmd_object);
-        let stream = &mut *self.stream.lock().unwrap();
+        let stream = &mut *self.message_stream.lock().unwrap();
         stream.send_message(
             RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
             RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID,
@@ -145,7 +196,7 @@ impl RtmpServer {
         let cmd_object = decode_amf_message(&mut reader)?;
         match cmd_object {
             AmfObject::Object(_) | AmfObject::Null => {
-                self.stream.lock().unwrap().send_message(
+                self.message_stream.lock().unwrap().send_message(
                     3,
                     RTMP_NET_CONNECTION_STREAM_ID,
                     0,
@@ -198,7 +249,7 @@ impl RtmpServer {
             "stream_name = {}, start = {:?}, duration = {:?}, reset = {:?}",
             stream_name, start, duration, reset
         );
-        let stream = &mut *self.stream.lock().unwrap();
+        let stream = &mut *self.message_stream.lock().unwrap();
         // Set chunk size.
         stream.send_message(
             RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
@@ -239,14 +290,22 @@ impl RtmpServer {
             ]),
         )?;
         stream.set_read_timeout(Duration::from_micros(10));
-        self.clients
-            .lock()
-            .unwrap()
+        let media_streams = &mut *self.media_streams.lock().unwrap();
+        let media_streams = media_streams
             .entry(stream_name)
-            .or_insert_with(Vec::new)
-            .push(RtmpClient {
-                stream: Arc::clone(&self.stream),
-            });
+            .or_insert_with(RtmpMediaStream::default);
+
+        // Stream has already begun, send metadata first.
+        if let Some(ref metadata) = media_streams.metadata {
+            stream.send_message(
+                3,
+                metadata.header.message_stream_id,
+                metadata.header.timestamp,
+                RTMP_DATA_MESSAGE_AMF0,
+                &metadata.message,
+            )?;
+        }
+        media_streams.push(Arc::clone(&self.message_stream));
         eprintln!("start playing");
         Ok(())
     }
@@ -261,19 +320,29 @@ impl RtmpServer {
             "publishing_name = {}, publishing_type = {}",
             publishing_name, publishing_type
         );
-        self.stream_name = publishing_name;
-        self.stream.lock().unwrap().send_message(
+        let media_streams = &mut *self.media_streams.lock().unwrap();
+        let entry = media_streams
+            .entry(publishing_name.clone())
+            .or_insert_with(RtmpMediaStream::default);
+        let code = if entry.published {
+            "NetStream.Publish.Denied"
+        } else {
+            entry.published = true;
+            "NetStream.Publish.Start"
+        };
+        self.message_stream.lock().unwrap().send_message(
             3,
             RTMP_NET_CONNECTION_STREAM_ID,
             0,
             RTMP_COMMAND_MESSAGE_AMF0,
-            &Self::on_status("NetStream.Publish.Start"),
+            &Self::on_status(code),
         )?;
+        self.stream_name = publishing_name;
         Ok(())
     }
 
     fn handle_delete_stream(&mut self, _reader: Cursor<Vec<u8>>) -> Result<()> {
-        self.clients.lock().unwrap().remove(&self.stream_name);
+        self.media_streams.lock().unwrap().remove(&self.stream_name);
         Ok(())
     }
 
@@ -319,7 +388,12 @@ impl RtmpServer {
         let properties = decode_amf_ecma_array(&mut reader, true)?;
         eprintln!("{:?}", properties);
 
-        self.broadcast(0, RTMP_DATA_MESSAGE_AMF0, message);
+        self.broadcast(0, RTMP_DATA_MESSAGE_AMF0, &message)?;
+        let media_streams = &mut *self.media_streams.lock().unwrap();
+        let media_stream = media_streams
+            .get_mut(&self.stream_name)
+            .ok_or(Error::MissingMediaStream)?;
+        media_stream.metadata = Some(message);
         Ok(())
     }
 
@@ -327,7 +401,8 @@ impl RtmpServer {
         assert_eq!(message.header.message_length, 4);
         let mut buffer = [0x0; 4];
         buffer.copy_from_slice(&message.message);
-        self.stream.lock().unwrap().max_chunk_size_read = u32::from_be_bytes(buffer) as usize;
+        self.message_stream.lock().unwrap().max_chunk_size_read =
+            u32::from_be_bytes(buffer) as usize;
     }
 
     fn handle_window_ack_size(&mut self, message: Message) {
@@ -357,47 +432,23 @@ impl RtmpServer {
         Ok(())
     }
 
-    fn broadcast(&mut self, timestamp: u32, type_id: u8, message: Message) {
-        let clients = &mut *self.clients.lock().unwrap();
-        clients.get_mut(&self.stream_name).map_or((), |clients| {
-            let offline: Vec<_> = clients
-                .iter()
-                .enumerate()
-                .map(|(i, c)| {
-                    let stream = &mut *c.stream.lock().unwrap();
-                    if stream
-                        .send_message(
-                            3,
-                            message.header.message_stream_id,
-                            timestamp,
-                            type_id,
-                            &message.message,
-                        )
-                        .is_err()
-                    {
-                        Some(i)
-                    } else {
-                        None
-                    }
-                })
-                .flatten()
-                .collect();
-
-            // Remove offline clients
-            offline.iter().for_each(|i| {
-                clients.remove(*i);
-            });
-        })
+    fn broadcast(&mut self, timestamp: u32, type_id: u8, message: &Message) -> Result<()> {
+        let media_streams = &mut *self.media_streams.lock().unwrap();
+        let s = media_streams
+            .get_mut(&self.stream_name)
+            .ok_or(Error::MissingMediaStream)?;
+        s.broadcast(timestamp, type_id, message);
+        Ok(())
     }
 
     fn handle_video_message(&mut self, message: Message) -> Result<()> {
         let (_frame_type, _codec_id) = ((message.message[0] >> 4) & 0xf, message.message[0] & 0xf);
-        self.broadcast(message.header.timestamp, RTMP_VIDEO_MESSAGE, message);
+        self.broadcast(message.header.timestamp, RTMP_VIDEO_MESSAGE, &message)?;
         Ok(())
     }
 
     fn handle_audio_message(&mut self, message: Message) -> Result<()> {
-        self.broadcast(message.header.timestamp, RTMP_AUDIO_MESSAGE, message);
+        self.broadcast(message.header.timestamp, RTMP_AUDIO_MESSAGE, &message)?;
         Ok(())
     }
 
@@ -443,9 +494,9 @@ impl RtmpServer {
     }
 
     pub fn serve(&mut self) -> Result<()> {
-        self.stream.lock().unwrap().handle_handshake()?;
+        self.message_stream.lock().unwrap().handle_handshake()?;
         loop {
-            let message = self.stream.lock().unwrap().read_message();
+            let message = self.message_stream.lock().unwrap().read_message();
             match message {
                 Err(e) => {
                     if let Error::Io(ref io) = e {
@@ -471,11 +522,11 @@ impl RtmpServer {
 
     pub fn new(
         stream: TcpStream,
-        clients: Arc<Mutex<HashMap<String, Vec<RtmpClient>>>>,
+        media_streams: Arc<Mutex<HashMap<String, RtmpMediaStream>>>,
     ) -> RtmpServer {
         RtmpServer {
-            stream: Arc::new(Mutex::new(RtmpStream::new(stream))),
-            clients,
+            message_stream: Arc::new(Mutex::new(RtmpMessageStream::new(stream))),
+            media_streams,
             stream_name: String::new(),
         }
     }

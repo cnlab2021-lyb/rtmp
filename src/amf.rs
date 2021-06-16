@@ -1,7 +1,8 @@
-use super::error::{Error, Result};
-use super::utils::*;
 use std::collections::HashMap;
 use std::io::Cursor;
+
+use crate::error::{Error, Result};
+use crate::utils::*;
 
 const NUMBER_MARKER: u8 = 0x0;
 const BOOLEAN_MARKER: u8 = 0x1;
