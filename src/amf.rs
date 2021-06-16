@@ -366,7 +366,7 @@ mod tests {
             eprintln!("array = {:?}, v = {:?}", array, v);
             assert_eq!(array, v);
         } else {
-            panic!("Test failed");
+             panic!("Test failed");
         }
     }
 }
