@@ -307,10 +307,10 @@ impl RtmpServer {
                 AmfObject::Boolean(true),
             ]),
         )?;
-        stream.set_read_timeout(Duration::from_micros(10));
+        stream.set_read_timeout(Duration::from_micros(1));
         let media_streams = &mut *self.media_streams.lock().unwrap();
         let media_streams = media_streams
-            .entry(stream_name)
+            .entry(stream_name.clone())
             .or_insert_with(RtmpMediaStream::default);
 
         // Stream has already begun, send metadata first.
@@ -324,7 +324,7 @@ impl RtmpServer {
             )?;
         }
         media_streams.push(RtmpClient::new(Arc::clone(&self.message_stream)));
-        eprintln!("start playing");
+        self.stream_name = stream_name;
         Ok(())
     }
 
@@ -338,9 +338,18 @@ impl RtmpServer {
         let media_streams = &mut *self.media_streams.lock().unwrap();
         if let Some(media_stream) = media_streams.get_mut(&self.stream_name) {
             media_stream.clients.iter_mut().for_each(|client| {
-                client.paused = pause;
+                if Arc::ptr_eq(&client.stream, &self.message_stream) {
+                    client.paused = pause;
+                }
             });
         }
+        self.message_stream.lock().unwrap().send_message(
+            3,
+            RTMP_NET_CONNECTION_STREAM_ID,
+            0,
+            RTMP_COMMAND_MESSAGE_AMF0,
+            &Self::on_status("NetStream.Pause.Notify"),
+        )?;
         Ok(())
     }
 
