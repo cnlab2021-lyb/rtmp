@@ -19,7 +19,7 @@ impl NetworkStream for TcpStream {
 
 #[derive(Debug)]
 pub struct RtmpMessageStream<S: NetworkStream> {
-    channels: HashMap<u16, Message>,
+    pub channels: HashMap<u16, Message>,
     prev_message_header: HashMap<u16, (ChunkMessageHeader, u8)>,
     stream: S,
     pub max_chunk_size_read: usize,

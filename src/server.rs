@@ -38,7 +38,7 @@ pub struct RtmpServer {
 }
 
 const RTMP_SET_CHUNK_SIZE: u8 = 0x1;
-// const RTMP_ABORT_MESSAGE: u8 = 0x2;
+const RTMP_ABORT_MESSAGE: u8 = 0x2;
 const RTMP_ACKNOWLEDGEMENT: u8 = 0x3;
 const RTMP_USER_CONTROL_MESSAGE: u8 = 0x4;
 const RTMP_WINDOW_ACK_SIZE: u8 = 0x5;
@@ -452,6 +452,13 @@ impl RtmpServer {
         Ok(())
     }
 
+    fn handle_abort_message(&mut self, message: Message) -> Result<()> {
+        let chunk_stream_id = read_u32(&mut Cursor::new(message.message)).map_err(Error::Io)?;
+        let stream = &mut *self.message_stream.lock().unwrap();
+        stream.channels.remove(&(chunk_stream_id as u16));
+        Ok(())
+    }
+
     fn handle_message(&mut self, message: Message) -> Result<bool> {
         match message.header.message_type_id {
             RTMP_COMMAND_MESSAGE_AMF0 => {
@@ -469,6 +476,9 @@ impl RtmpServer {
             }
             RTMP_SET_CHUNK_SIZE => {
                 self.handle_set_chunk_size(message);
+            }
+            RTMP_ABORT_MESSAGE => {
+                self.handle_abort_message(message)?;
             }
             RTMP_WINDOW_ACK_SIZE => {
                 self.handle_window_ack_size(message);
