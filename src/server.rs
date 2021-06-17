@@ -10,15 +10,30 @@ use crate::error::{Error, Result};
 use crate::stream::{ChunkMessageHeader, Message, RtmpMessageStream};
 use crate::utils::*;
 
+#[derive(Debug)]
+pub struct RtmpClient {
+    stream: Arc<Mutex<RtmpMessageStream<TcpStream>>>,
+    paused: bool,
+}
+
+impl RtmpClient {
+    fn new(stream: Arc<Mutex<RtmpMessageStream<TcpStream>>>) -> Self {
+        Self {
+            stream,
+            paused: false,
+        }
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct RtmpMediaStream {
-    clients: Vec<Arc<Mutex<RtmpMessageStream<TcpStream>>>>,
+    clients: Vec<RtmpClient>,
     metadata: Option<Message>,
     published: bool,
 }
 
 impl Deref for RtmpMediaStream {
-    type Target = Vec<Arc<Mutex<RtmpMessageStream<TcpStream>>>>;
+    type Target = Vec<RtmpClient>;
 
     fn deref(&self) -> &Self::Target {
         &self.clients
@@ -65,8 +80,11 @@ impl RtmpMediaStream {
             .clients
             .iter()
             .enumerate()
-            .map(|(i, s)| {
-                let stream = &mut *s.lock().unwrap();
+            .map(|(i, client)| {
+                if client.paused {
+                    return None;
+                }
+                let stream = &mut *client.stream.lock().unwrap();
                 if stream
                     .send_message(
                         3,
@@ -305,8 +323,24 @@ impl RtmpServer {
                 &metadata.message,
             )?;
         }
-        media_streams.push(Arc::clone(&self.message_stream));
+        media_streams.push(RtmpClient::new(Arc::clone(&self.message_stream)));
         eprintln!("start playing");
+        Ok(())
+    }
+
+    #[allow(clippy::float_cmp)]
+    fn handle_pause(&mut self, mut reader: Cursor<Vec<u8>>) -> Result<()> {
+        let transaction_id = decode_amf_number(&mut reader, true)?;
+        assert_eq!(transaction_id, 0_f64);
+        let _ = decode_amf_null(&mut reader, true)?;
+        let pause = decode_amf_boolean(&mut reader, true)?;
+        let _pause_time = decode_amf_number(&mut reader, true)?;
+        let media_streams = &mut *self.media_streams.lock().unwrap();
+        if let Some(media_stream) = media_streams.get_mut(&self.stream_name) {
+            media_stream.clients.iter_mut().for_each(|client| {
+                client.paused = pause;
+            });
+        }
         Ok(())
     }
 
@@ -365,6 +399,7 @@ impl RtmpServer {
                 "releaseStream" => self.handle_release_stream(reader)?,
                 "createStream" => self.handle_create_stream(reader, message.header)?,
                 "play" => self.handle_play(message.header, reader)?,
+                "pause" => self.handle_pause(reader)?,
                 "getStreamLength" => self.handle_get_stream_length(reader)?,
                 "publish" => self.handle_publish(reader)?,
                 "FCPublish" | "FCUnpublish" => {}
