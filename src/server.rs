@@ -143,7 +143,7 @@ impl RtmpServer {
             RTMP_SET_PEER_BANDWIDTH,
             &buffer,
         )?;
-        // Send user control message: StreamBegin.
+        // Send user control message: Stream Begin.
         stream.send_message(
             RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
             RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID,
@@ -172,10 +172,6 @@ impl RtmpServer {
             (
                 String::from("code"),
                 AmfObject::String(String::from("NetConnection.Connect.Success")),
-            ),
-            (
-                String::from("description"),
-                AmfObject::String(String::from("Connection succeeded.")),
             ),
             (String::from("objectEncoding"), AmfObject::Number(0.0)),
         ]
@@ -278,8 +274,14 @@ impl RtmpServer {
         )?;
         stream.max_chunk_size_write = 0x7FFFFFFF;
 
-        // Send user control message: StreamBegin.
-        stream.send_message(3, 0, 0, RTMP_USER_CONTROL_MESSAGE, &[0x0; 6])?;
+        // Send user control message: Stream Begin.
+        stream.send_message(
+            RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID,
+            RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID,
+            0,
+            RTMP_USER_CONTROL_MESSAGE,
+            &[0x0; 6],
+        )?;
 
         stream.send_message(
             3,
@@ -359,7 +361,7 @@ impl RtmpServer {
         let _cmd_object = decode_amf_null(&mut reader, true)?;
         let publishing_name = decode_amf_string(&mut reader, true)?;
         let publishing_type = decode_amf_string(&mut reader, true)?;
-        println!(
+        eprintln!(
             "publishing_name = {}, publishing_type = {}",
             publishing_name, publishing_type
         );
@@ -552,12 +554,9 @@ impl RtmpServer {
         loop {
             let message = self.message_stream.lock().unwrap().read_message();
             match message {
+                Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Ok(None) => {}
                 Err(e) => {
-                    if let Error::Io(ref io) = e {
-                        if io.kind() == std::io::ErrorKind::WouldBlock {
-                            continue;
-                        }
-                    }
                     return Err(e);
                 }
                 Ok(Some(msg)) => {
@@ -568,7 +567,6 @@ impl RtmpServer {
                         return Ok(());
                     }
                 }
-                Ok(None) => {}
             }
             std::thread::yield_now();
         }

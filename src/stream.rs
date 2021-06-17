@@ -136,10 +136,6 @@ impl<S: NetworkStream> RtmpMessageStream<S> {
     pub fn read_message(&mut self) -> Result<Option<Message>> {
         let basic_header = self.read_chunk_basic_header().map_err(Error::Io)?;
         let message_header = self.read_chunk_message_header(&basic_header)?;
-        eprintln!(
-            "basic_header = {:?}, message_header = {:?}",
-            basic_header, message_header
-        );
         let is_first_chunk = !self.channels.contains_key(&basic_header.chunk_stream_id);
         let msg = self
             .channels
