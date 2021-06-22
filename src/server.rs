@@ -423,7 +423,6 @@ impl RtmpServer {
     }
 
     fn handle_data_message(&mut self, message: Message) -> Result<()> {
-        // FIXME: Remove clone().
         let mut reader = Cursor::new(&message.message);
         if decode_amf_string(&mut reader, true)? != "@setDataFrame" {
             return Err(Error::UnknownDataMessage);
