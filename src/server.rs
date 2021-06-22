@@ -6,10 +6,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::amf::*;
+use crate::constant::*;
 use crate::error::{Error, Result};
 use crate::stream::{ChunkMessageHeader, Message, RtmpMessageStream};
 use crate::utils::*;
-use crate::constant::*;
 
 #[derive(Debug)]
 pub struct RtmpClient {
