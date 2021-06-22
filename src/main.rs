@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 mod amf;
+mod constant;
 mod error;
 mod server;
 mod stream;

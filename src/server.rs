@@ -9,6 +9,7 @@ use crate::amf::*;
 use crate::error::{Error, Result};
 use crate::stream::{ChunkMessageHeader, Message, RtmpMessageStream};
 use crate::utils::*;
+use crate::constant::*;
 
 #[derive(Debug)]
 pub struct RtmpClient {
@@ -51,28 +52,6 @@ pub struct RtmpServer {
     media_streams: Arc<Mutex<HashMap<String, RtmpMediaStream>>>,
     stream_name: String,
 }
-
-const RTMP_SET_CHUNK_SIZE: u8 = 0x1;
-const RTMP_ABORT_MESSAGE: u8 = 0x2;
-const RTMP_ACKNOWLEDGEMENT: u8 = 0x3;
-const RTMP_USER_CONTROL_MESSAGE: u8 = 0x4;
-const RTMP_WINDOW_ACK_SIZE: u8 = 0x5;
-const RTMP_SET_PEER_BANDWIDTH: u8 = 0x6;
-
-const RTMP_COMMAND_MESSAGE_AMF0: u8 = 20;
-const RTMP_COMMAND_MESSAGE_AMF3: u8 = 17;
-const RTMP_DATA_MESSAGE_AMF0: u8 = 18;
-const RTMP_DATA_MESSAGE_AMF3: u8 = 15;
-const RTMP_AUDIO_MESSAGE: u8 = 8;
-const RTMP_VIDEO_MESSAGE: u8 = 9;
-
-const RTMP_NET_CONNECTION_STREAM_ID: u32 = 0;
-
-const RTMP_PROTOCOL_CONTROL_MESSAGE_STREAM_ID: u32 = 0;
-const RTMP_PROTOCOL_CONTROL_CHUNK_STREAM_ID: u16 = 0x2;
-
-// User control message events
-const RTMP_USER_CONTROL_SET_BUFFER_LENGTH: u16 = 0x3;
 
 impl RtmpMediaStream {
     fn broadcast(&mut self, timestamp: u32, type_id: u8, message: &Message) {
