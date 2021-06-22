@@ -340,8 +340,8 @@ impl RtmpServer {
             media_stream.clients.iter_mut().for_each(|client| {
                 // SAFETY: Both streams are valid TcpStream and thus have valid file descriptors.
                 // Passing them to libc stat() function is fine.
-                if unsafe { get_fd_stat(client.stream.as_raw_fd()) }
-                    == unsafe { get_fd_stat(self.message_stream.as_raw_fd()) }
+                if dbg!(unsafe { get_fd_stat(client.stream.as_raw_fd()) })
+                    == dbg!(unsafe { get_fd_stat(self.message_stream.as_raw_fd()) })
                 {
                     client.paused = pause;
                 }

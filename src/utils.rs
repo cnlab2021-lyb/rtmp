@@ -41,11 +41,12 @@ pub fn read_buffer_sized<R: Read, const N: usize>(reader: &mut R) -> io::Result<
     Ok(buffer)
 }
 
-pub unsafe fn get_fd_stat(fd: RawFd) -> (i32, i32) {
+pub unsafe fn get_fd_stat(fd: RawFd) -> (libc::dev_t, libc::ino_t) {
+    eprintln!("fd = {}", fd);
     let mut stat: libc::stat = std::mem::zeroed();
     let stat_ptr: *mut libc::stat = &mut stat;
     libc::fstat(fd, stat_ptr);
-    (stat.st_dev, stat.st_dev)
+    (stat.st_dev, stat.st_ino)
 }
 
 pub fn aggregate<T>(buffer: &[u8], is_little_endian: bool) -> T
