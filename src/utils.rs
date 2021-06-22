@@ -42,7 +42,6 @@ pub fn read_buffer_sized<R: Read, const N: usize>(reader: &mut R) -> io::Result<
 }
 
 pub unsafe fn get_fd_stat(fd: RawFd) -> (libc::dev_t, libc::ino_t) {
-    eprintln!("fd = {}", fd);
     let mut stat: libc::stat = std::mem::zeroed();
     let stat_ptr: *mut libc::stat = &mut stat;
     libc::fstat(fd, stat_ptr);

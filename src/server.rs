@@ -340,8 +340,12 @@ impl RtmpServer {
             media_stream.clients.iter_mut().for_each(|client| {
                 // SAFETY: Both streams are valid TcpStream and thus have valid file descriptors.
                 // Passing them to libc stat() function is fine.
-                if dbg!(unsafe { get_fd_stat(client.stream.as_raw_fd()) })
-                    == dbg!(unsafe { get_fd_stat(self.message_stream.as_raw_fd()) })
+                //
+                // FIXME: Pause works well on Linux, but on MacOS fstat() returns a zero'd buffer
+                // (though according to the documentation the device number and inode number should
+                // still be correct) and thus pressing "pause" at one client stops all the others.
+                if unsafe { get_fd_stat(client.stream.as_raw_fd()) }
+                    == unsafe { get_fd_stat(self.message_stream.as_raw_fd()) }
                 {
                     client.paused = pause;
                 }
