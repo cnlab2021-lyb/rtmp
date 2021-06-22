@@ -1,30 +1,32 @@
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
-use std::time::Duration;
+use std::os::unix::io::{AsRawFd, RawFd};
 
 use crate::error::{Error, Result};
 use crate::utils::{aggregate, read_buffer, read_buffer_sized, read_numeric, read_u32};
 
-pub trait NetworkStream: Read + Write {
-    fn set_read_timeout(&self, duration: Option<Duration>) -> io::Result<()>;
+pub trait TryClone: Sized {
+    fn try_clone(&self) -> io::Result<Self>;
 }
 
-impl NetworkStream for TcpStream {
+impl TryClone for TcpStream {
     #[inline]
-    fn set_read_timeout(&self, duration: Option<Duration>) -> io::Result<()> {
-        self.set_read_timeout(duration)
+    fn try_clone(&self) -> io::Result<TcpStream> {
+        self.try_clone()
     }
 }
 
 #[derive(Debug)]
-pub struct RtmpMessageStream<S: NetworkStream> {
+pub struct RtmpMessageStreamImpl<S: TryClone + Read + Write + AsRawFd> {
     pub channels: HashMap<u16, Message>,
     prev_message_header: HashMap<u16, (ChunkMessageHeader, u8)>,
     stream: S,
     pub max_chunk_size_read: usize,
     pub max_chunk_size_write: usize,
 }
+
+pub type RtmpMessageStream = RtmpMessageStreamImpl<TcpStream>;
 
 #[derive(Debug)]
 struct ChunkBasicHeader {
@@ -57,7 +59,7 @@ impl Message {
     }
 }
 
-impl<S: NetworkStream> RtmpMessageStream<S> {
+impl<S: TryClone + Read + Write + AsRawFd> RtmpMessageStreamImpl<S> {
     pub fn new(stream: S) -> Self {
         Self {
             channels: HashMap::new(),
@@ -277,8 +279,18 @@ impl<S: NetworkStream> RtmpMessageStream<S> {
         Ok(())
     }
 
-    pub fn set_read_timeout(&mut self, duration: Duration) {
-        self.stream.set_read_timeout(Some(duration)).unwrap();
+    pub fn decouple(&self) -> Self {
+        Self {
+            channels: HashMap::new(),
+            prev_message_header: HashMap::new(),
+            stream: self.stream.try_clone().expect("Failed to clone"),
+            max_chunk_size_read: self.max_chunk_size_read,
+            max_chunk_size_write: self.max_chunk_size_write,
+        }
+    }
+
+    pub fn as_raw_fd(&self) -> RawFd {
+        self.stream.as_raw_fd()
     }
 }
 
@@ -286,6 +298,7 @@ impl<S: NetworkStream> RtmpMessageStream<S> {
 mod tests {
     use super::*;
 
+    #[derive(Default)]
     struct MockTcpStream {
         cursor: io::Cursor<Vec<u8>>,
         buffer: Vec<u8>,
@@ -308,9 +321,15 @@ mod tests {
         }
     }
 
-    impl NetworkStream for MockTcpStream {
-        fn set_read_timeout(&self, _: Option<Duration>) -> io::Result<()> {
-            Ok(())
+    impl TryClone for MockTcpStream {
+        fn try_clone(&self) -> io::Result<Self> {
+            Ok(Self::default())
+        }
+    }
+
+    impl AsRawFd for MockTcpStream {
+        fn as_raw_fd(&self) -> RawFd {
+            0
         }
     }
 
@@ -320,13 +339,15 @@ mod tests {
         }
     }
 
+    type MockRtmpMessageStream = RtmpMessageStreamImpl<MockTcpStream>;
+
     #[test]
     fn test_basic_header() {
         let mock = MockTcpStream {
             cursor: io::Cursor::new(vec![0x3]),
             buffer: Vec::new(),
         };
-        let mut stream = RtmpMessageStream::new(mock);
+        let mut stream = MockRtmpMessageStream::new(mock);
         let basic_header = stream.read_chunk_basic_header().unwrap();
         assert_eq!(basic_header.chunk_type, 0);
         assert_eq!(basic_header.chunk_stream_id, 3);
@@ -338,14 +359,14 @@ mod tests {
             cursor: io::Cursor::new(vec![0x0, 0x0]),
             buffer: Vec::new(),
         };
-        let mut stream = RtmpMessageStream::new(mock);
+        let mut stream = MockRtmpMessageStream::new(mock);
         let basic_header = stream.read_chunk_basic_header().unwrap();
         assert_eq!(basic_header.chunk_type, 0);
         assert_eq!(basic_header.chunk_stream_id, 64);
     }
 
     fn send_message_header(
-        stream: &mut RtmpMessageStream<MockTcpStream>,
+        stream: &mut MockRtmpMessageStream,
         header: ChunkMessageHeader,
         chunk_type: u8,
     ) {
@@ -366,7 +387,7 @@ mod tests {
             cursor: io::Cursor::new(vec![]),
             buffer: Vec::new(),
         };
-        let mut stream = RtmpMessageStream::new(mock);
+        let mut stream = MockRtmpMessageStream::new(mock);
         send_message_header(
             &mut stream,
             ChunkMessageHeader {
@@ -402,7 +423,7 @@ mod tests {
             cursor: io::Cursor::new(vec![]),
             buffer: Vec::new(),
         };
-        let mut stream = RtmpMessageStream::new(mock);
+        let mut stream = MockRtmpMessageStream::new(mock);
         send_message_header(
             &mut stream,
             ChunkMessageHeader {
@@ -468,7 +489,7 @@ mod tests {
             cursor: io::Cursor::new(vec![]),
             buffer: Vec::new(),
         };
-        let mut stream = RtmpMessageStream::new(mock);
+        let mut stream = MockRtmpMessageStream::new(mock);
         send_message_header(
             &mut stream,
             ChunkMessageHeader {
