@@ -1,5 +1,6 @@
 use std::io::{self, Read};
 use std::ops;
+use std::os::unix::io::RawFd;
 
 pub fn read_u8<R: Read>(reader: &mut R) -> io::Result<u8> {
     Ok(u8::from_be_bytes(read_buffer_sized::<_, 1>(reader)?))
@@ -38,6 +39,13 @@ pub fn read_buffer_sized<R: Read, const N: usize>(reader: &mut R) -> io::Result<
     let mut buffer = [0x0; N];
     reader.read_exact(&mut buffer)?;
     Ok(buffer)
+}
+
+pub unsafe fn get_fd_stat(fd: RawFd) -> (libc::dev_t, libc::ino_t) {
+    let mut stat: libc::stat = std::mem::zeroed();
+    let stat_ptr: *mut libc::stat = &mut stat;
+    libc::fstat(fd, stat_ptr);
+    (stat.st_dev, stat.st_ino)
 }
 
 pub fn aggregate<T>(buffer: &[u8], is_little_endian: bool) -> T
