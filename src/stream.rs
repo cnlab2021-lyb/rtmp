@@ -22,6 +22,7 @@ pub struct RtmpMessageStreamImpl<S: TryClone + Read + Write + AsRawFd> {
     pub channels: HashMap<u16, Message>,
     prev_message_header: HashMap<u16, (ChunkMessageHeader, u8)>,
     stream: S,
+    pub from_fd: RawFd,
     pub max_chunk_size_read: usize,
     pub max_chunk_size_write: usize,
 }
@@ -61,10 +62,12 @@ impl Message {
 
 impl<S: TryClone + Read + Write + AsRawFd> RtmpMessageStreamImpl<S> {
     pub fn new(stream: S) -> Self {
+        let from_fd = stream.as_raw_fd();
         Self {
             channels: HashMap::new(),
             prev_message_header: HashMap::new(),
             stream,
+            from_fd,
             max_chunk_size_read: 128,
             max_chunk_size_write: 128,
         }
@@ -284,13 +287,10 @@ impl<S: TryClone + Read + Write + AsRawFd> RtmpMessageStreamImpl<S> {
             channels: HashMap::new(),
             prev_message_header: HashMap::new(),
             stream: self.stream.try_clone().expect("Failed to clone"),
+            from_fd: self.from_fd,
             max_chunk_size_read: self.max_chunk_size_read,
             max_chunk_size_write: self.max_chunk_size_write,
         }
-    }
-
-    pub fn as_raw_fd(&self) -> RawFd {
-        self.stream.as_raw_fd()
     }
 }
 
