@@ -205,11 +205,11 @@ impl RtmpServer {
         }
     }
 
-    fn on_status(code: &str) -> Vec<u8> {
+    fn on_status(code: &str, success: bool) -> Vec<u8> {
         let information: HashMap<String, AmfObject> = [
             (
                 String::from("level"),
-                AmfObject::String(String::from("status")),
+                AmfObject::String(String::from(if success { "status" } else { "error" })),
             ),
             (String::from("code"), AmfObject::String(code.to_string())),
         ]
@@ -264,14 +264,14 @@ impl RtmpServer {
             RTMP_NET_CONNECTION_STREAM_ID,
             0,
             RTMP_COMMAND_MESSAGE_AMF0,
-            &Self::on_status("NetStream.Play.Reset"),
+            &Self::on_status("NetStream.Play.Reset", true),
         )?;
         self.message_stream.send_message(
             3,
             RTMP_NET_CONNECTION_STREAM_ID,
             0,
             RTMP_COMMAND_MESSAGE_AMF0,
-            &Self::on_status("NetStream.Play.Start"),
+            &Self::on_status("NetStream.Play.Start", true),
         )?;
         // XXX: Unknown message
         self.message_stream.send_message(
@@ -308,6 +308,23 @@ impl RtmpServer {
     }
 
     #[allow(clippy::float_cmp)]
+    fn handle_seek(&mut self, mut reader: Cursor<Vec<u8>>) -> Result<()> {
+        let transaction_id = decode_amf_number(&mut reader, true)?;
+        assert_eq!(transaction_id, 0_f64);
+        let _ = decode_amf_null(&mut reader, true)?;
+        let _ = decode_amf_number(&mut reader, true)?;
+        // Seek is not supported.
+        self.message_stream.send_message(
+            3,
+            RTMP_NET_CONNECTION_STREAM_ID,
+            0,
+            RTMP_COMMAND_MESSAGE_AMF0,
+            &Self::on_status("NetStream.Seek.Notify", false),
+        )?;
+        Ok(())
+    }
+
+    #[allow(clippy::float_cmp)]
     fn handle_pause(&mut self, mut reader: Cursor<Vec<u8>>) -> Result<()> {
         let transaction_id = decode_amf_number(&mut reader, true)?;
         assert_eq!(transaction_id, 0_f64);
@@ -327,7 +344,7 @@ impl RtmpServer {
             RTMP_NET_CONNECTION_STREAM_ID,
             0,
             RTMP_COMMAND_MESSAGE_AMF0,
-            &Self::on_status("NetStream.Pause.Notify"),
+            &Self::on_status("NetStream.Pause.Notify", true),
         )?;
         Ok(())
     }
@@ -357,7 +374,7 @@ impl RtmpServer {
             RTMP_NET_CONNECTION_STREAM_ID,
             0,
             RTMP_COMMAND_MESSAGE_AMF0,
-            &Self::on_status(code),
+            &Self::on_status(code, true),
         )?;
         self.stream_name = publishing_name;
         Ok(())
@@ -387,6 +404,7 @@ impl RtmpServer {
                 "releaseStream" => self.handle_release_stream(reader)?,
                 "createStream" => self.handle_create_stream(reader, message.header)?,
                 "play" => self.handle_play(message.header, reader)?,
+                "seek" => self.handle_seek(reader)?,
                 "pause" => self.handle_pause(reader)?,
                 "getStreamLength" => self.handle_get_stream_length(reader)?,
                 "publish" => self.handle_publish(reader)?,
