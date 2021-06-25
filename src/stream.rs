@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
@@ -20,6 +21,7 @@ impl TryClone for TcpStream {
 #[derive(Debug)]
 pub struct RtmpMessageStreamImpl<S: TryClone + Read + Write + AsRawFd> {
     pub channels: HashMap<u16, Message>,
+    storage: RefCell<HashMap<u16, Vec<u8>>>,
     prev_message_header: HashMap<u16, (ChunkMessageHeader, u8)>,
     stream: S,
     pub from_fd: RawFd,
@@ -49,14 +51,13 @@ pub struct ChunkMessageHeader {
 pub struct Message {
     pub header: ChunkMessageHeader,
     pub message: Vec<u8>,
+    storage: (u16, RefCell<HashMap<u16, Vec<u8>>>),
 }
 
-impl Message {
-    fn new(header: ChunkMessageHeader) -> Self {
-        Message {
-            header,
-            message: Vec::new(),
-        }
+impl Drop for Message {
+    fn drop(&mut self) {
+        let mut storage = self.storage.1.borrow_mut();
+        storage.insert(self.storage.0, self.message.drain(..).collect());
     }
 }
 
@@ -65,6 +66,7 @@ impl<S: TryClone + Read + Write + AsRawFd> RtmpMessageStreamImpl<S> {
         let from_fd = stream.as_raw_fd();
         Self {
             channels: HashMap::new(),
+            storage: RefCell::new(HashMap::new()),
             prev_message_header: HashMap::new(),
             stream,
             from_fd,
@@ -142,10 +144,21 @@ impl<S: TryClone + Read + Write + AsRawFd> RtmpMessageStreamImpl<S> {
         let basic_header = self.read_chunk_basic_header().map_err(Error::Io)?;
         let message_header = self.read_chunk_message_header(&basic_header)?;
         let is_first_chunk = !self.channels.contains_key(&basic_header.chunk_stream_id);
+        let storage = &mut self.storage;
         let msg = self
             .channels
             .entry(basic_header.chunk_stream_id)
-            .or_insert_with(|| Message::new(message_header.clone()));
+            .or_insert_with(|| {
+                let buffer = storage
+                    .borrow_mut()
+                    .remove(&basic_header.chunk_stream_id)
+                    .unwrap_or_else(Vec::new);
+                Message {
+                    header: message_header.clone(),
+                    message: buffer,
+                    storage: (basic_header.chunk_stream_id, RefCell::clone(storage)),
+                }
+            });
         let buffer_size = std::cmp::min(
             self.max_chunk_size_read,
             msg.header.message_length - msg.message.len(),
@@ -285,6 +298,7 @@ impl<S: TryClone + Read + Write + AsRawFd> RtmpMessageStreamImpl<S> {
     pub fn decouple(&self) -> Self {
         Self {
             channels: HashMap::new(),
+            storage: RefCell::new(HashMap::new()),
             prev_message_header: HashMap::new(),
             stream: self.stream.try_clone().expect("Failed to clone"),
             from_fd: self.from_fd,

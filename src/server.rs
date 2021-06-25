@@ -90,7 +90,7 @@ impl RtmpMediaStream {
 
 impl RtmpServer {
     #[allow(clippy::float_cmp)]
-    fn handle_connect(&mut self, mut reader: Cursor<Vec<u8>>) -> Result<()> {
+    fn handle_connect<T: AsRef<[u8]>>(&mut self, mut reader: Cursor<T>) -> Result<()> {
         let transaction_id = decode_amf_number(&mut reader, true)?;
         assert_eq!(transaction_id, 1_f64);
         let cmd_object = decode_amf_object(&mut reader, true)?;
@@ -171,17 +171,17 @@ impl RtmpServer {
         Ok(())
     }
 
-    fn handle_release_stream(&self, mut reader: Cursor<Vec<u8>>) -> Result<()> {
+    fn handle_release_stream<T: AsRef<[u8]>>(&self, mut reader: Cursor<T>) -> Result<()> {
         let _ = decode_amf_number(&mut reader, true)?;
         let _ = decode_amf_null(&mut reader, true)?;
         let _ = decode_amf_string(&mut reader, true)?;
         Ok(())
     }
 
-    fn handle_create_stream(
+    fn handle_create_stream<T: AsRef<[u8]>>(
         &mut self,
-        mut reader: Cursor<Vec<u8>>,
-        header: ChunkMessageHeader,
+        mut reader: Cursor<T>,
+        header: &ChunkMessageHeader,
     ) -> Result<()> {
         let transaction_id = decode_amf_number(&mut reader, true)?;
         let cmd_object = decode_amf_message(&mut reader)?;
@@ -224,11 +224,7 @@ impl RtmpServer {
         ])
     }
 
-    fn handle_play(
-        &mut self,
-        _header: ChunkMessageHeader,
-        mut reader: Cursor<Vec<u8>>,
-    ) -> Result<()> {
+    fn handle_play<T: AsRef<[u8]>>(&mut self, mut reader: Cursor<T>) -> Result<()> {
         let _transaction_id = decode_amf_number(&mut reader, true)?;
         // assert_eq!(_transaction_id, 0_f64);
         let _cmd_object = decode_amf_null(&mut reader, true)?;
@@ -308,7 +304,7 @@ impl RtmpServer {
     }
 
     #[allow(clippy::float_cmp)]
-    fn handle_seek(&mut self, mut reader: Cursor<Vec<u8>>) -> Result<()> {
+    fn handle_seek<T: AsRef<[u8]>>(&mut self, mut reader: Cursor<T>) -> Result<()> {
         let transaction_id = decode_amf_number(&mut reader, true)?;
         assert_eq!(transaction_id, 0_f64);
         let _ = decode_amf_null(&mut reader, true)?;
@@ -325,7 +321,7 @@ impl RtmpServer {
     }
 
     #[allow(clippy::float_cmp)]
-    fn handle_pause(&mut self, mut reader: Cursor<Vec<u8>>) -> Result<()> {
+    fn handle_pause<T: AsRef<[u8]>>(&mut self, mut reader: Cursor<T>) -> Result<()> {
         let transaction_id = decode_amf_number(&mut reader, true)?;
         assert_eq!(transaction_id, 0_f64);
         let _ = decode_amf_null(&mut reader, true)?;
@@ -349,7 +345,7 @@ impl RtmpServer {
         Ok(())
     }
 
-    fn handle_publish(&mut self, mut reader: Cursor<Vec<u8>>) -> Result<()> {
+    fn handle_publish<T: AsRef<[u8]>>(&mut self, mut reader: Cursor<T>) -> Result<()> {
         let _transaction_id = decode_amf_number(&mut reader, true)?;
         // assert_eq!(_transaction_id, 0_f64);
         let _cmd_object = decode_amf_null(&mut reader, true)?;
@@ -380,13 +376,13 @@ impl RtmpServer {
         Ok(())
     }
 
-    fn handle_delete_stream(&mut self, _reader: Cursor<Vec<u8>>) -> Result<()> {
+    fn handle_delete_stream<T: AsRef<[u8]>>(&mut self, _reader: Cursor<T>) -> Result<()> {
         self.media_streams.lock().unwrap().remove(&self.stream_name);
         Ok(())
     }
 
     #[allow(clippy::float_cmp)]
-    fn handle_get_stream_length(&mut self, mut reader: Cursor<Vec<u8>>) -> Result<()> {
+    fn handle_get_stream_length<T: AsRef<[u8]>>(&mut self, mut reader: Cursor<T>) -> Result<()> {
         let transaction_id = decode_amf_number(&mut reader, true)?;
         assert_eq!(transaction_id, 3_f64);
         let _ = decode_amf_null(&mut reader, true)?;
@@ -395,15 +391,15 @@ impl RtmpServer {
     }
 
     fn handle_command_message(&mut self, message: Message) -> Result<bool> {
-        let mut reader = Cursor::new(message.message);
+        let mut reader = Cursor::new(&message.message);
         if let AmfObject::String(cmd) = decode_amf_message(&mut reader)? {
             eprintln!("cmd = {}", cmd);
             match cmd.as_str() {
                 "connect" => self.handle_connect(reader)?,
                 "deleteStream" => self.handle_delete_stream(reader)?,
                 "releaseStream" => self.handle_release_stream(reader)?,
-                "createStream" => self.handle_create_stream(reader, message.header)?,
-                "play" => self.handle_play(message.header, reader)?,
+                "createStream" => self.handle_create_stream(reader, &message.header)?,
+                "play" => self.handle_play(reader)?,
                 "seek" => self.handle_seek(reader)?,
                 "pause" => self.handle_pause(reader)?,
                 "getStreamLength" => self.handle_get_stream_length(reader)?,
@@ -453,7 +449,7 @@ impl RtmpServer {
     }
 
     fn handle_user_control_message(&mut self, message: Message) -> Result<()> {
-        let mut cursor = Cursor::new(message.message);
+        let mut cursor = Cursor::new(&message.message);
         let event_type = read_u16(&mut cursor).map_err(Error::Io)?;
         match event_type {
             RTMP_USER_CONTROL_SET_BUFFER_LENGTH => {
@@ -492,7 +488,7 @@ impl RtmpServer {
     }
 
     fn handle_abort_message(&mut self, message: Message) -> Result<()> {
-        let chunk_stream_id = read_u32(&mut Cursor::new(message.message)).map_err(Error::Io)?;
+        let chunk_stream_id = read_u32(&mut Cursor::new(&message.message)).map_err(Error::Io)?;
         self.message_stream
             .channels
             .remove(&(chunk_stream_id as u16));
@@ -533,7 +529,7 @@ impl RtmpServer {
                 self.handle_video_message(message)?;
             }
             RTMP_ACKNOWLEDGEMENT => {
-                let ack = read_u32(&mut Cursor::new(message.message)).map_err(Error::Io)?;
+                let ack = read_u32(&mut Cursor::new(&message.message)).map_err(Error::Io)?;
                 eprintln!("ack = {}", ack);
             }
             _ => {
